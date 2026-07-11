@@ -9,7 +9,8 @@ import {Game} from '../Game';
 import {GameOptions} from '../game/GameOptions';
 import {Player} from '../Player';
 import {Server} from '../models/ServerModel';
-import {NewGameConfig} from '../../common/game/NewGameConfig';
+import {BOT_PLAYER_NAME, NewGameConfig} from '../../common/game/NewGameConfig';
+import {assertBotLaunchable, launchBot, BotLaunchError} from '../bot/BotLauncher';
 import {safeCast, isGameId, isSpectatorId, isPlayerId} from '../../common/Types';
 import {generateRandomId} from '../utils/server-ids';
 import {IGame} from '../IGame';
@@ -91,6 +92,17 @@ export class ApiCreateGame extends Handler {
       req.once('end', async () => {
         try {
           const gameReq = JSON.parse(body) as NewGameConfig;
+
+          // Bot-Gegner: VOR der Spielerstellung pruefen, ob der Bot startbar ist. Schlaegt das
+          // fehl, entsteht KEIN Spiel und der Nutzer bekommt eine klare Meldung - statt einer
+          // stummen Partie, in der der Gegner nie zieht.
+          if (gameReq.botOpponent === true) {
+            if (gameReq.players.length !== 2) {
+              throw new BotLaunchError('Ein Bot-Gegner ist derzeit nur in 2-Spieler-Partien moeglich.');
+            }
+            assertBotLaunchable();
+          }
+
           const gameId = safeCast(generateRandomId('g'), isGameId);
           const spectatorId = safeCast(generateRandomId('s'), isSpectatorId);
           const players = gameReq.players.map((p) => {
@@ -177,8 +189,29 @@ export class ApiCreateGame extends Handler {
             game = Game.newInstance(gameId, players, players[firstPlayerIdx], spectatorId, gameOptions, seed);
           }
           ctx.gameLoader.add(game);
+
+          // Bot-Gegner: Python-Bot an den Bot-Spieler anhaengen. Der Prozess laeuft
+          // eigenstaendig weiter und beendet sich beim Spielende selbst.
+          if (gameReq.botOpponent === true) {
+            // Ueber den NAMEN suchen: das Frontend mischt die Spielerliste bei
+            // randomFirstPlayer -> ein Index waere mal der Bot, mal der Mensch.
+            const botPlayer = players.find((p) => p.name === BOT_PLAYER_NAME);
+            if (botPlayer === undefined) {
+              throw new BotLaunchError(
+                `Bot-Spieler ('${BOT_PLAYER_NAME}') nicht in der Spielerliste gefunden.`);
+            }
+            const baseUrl = process.env.BOT_SERVER_URL ?? `http://localhost:${process.env.PORT ?? 8080}`;
+            launchBot(gameId, botPlayer.id, baseUrl);
+          }
+
           responses.writeJson(res, ctx, Server.getSimpleGameModel(game));
         } catch (error) {
+          // Bot-Startfehler als klare 400-Meldung durchreichen (nicht als generischer 500).
+          if (error instanceof BotLaunchError) {
+            responses.badRequest(req, res, error.message);
+            resolve();
+            return;
+          }
           responses.internalServerError(req, res, error);
         }
         resolve();

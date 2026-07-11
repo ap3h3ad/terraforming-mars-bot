@@ -26,3 +26,9 @@ node_modules/
 # misc
 .gitconfig
 ./logs/
+
+# Bot
+*.bak
+bot/__pycache__/
+bot/*.log
+*.patch

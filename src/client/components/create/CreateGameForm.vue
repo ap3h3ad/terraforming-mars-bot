@@ -382,6 +382,11 @@
                               </div>
                             </div>
 
+                            <input type="checkbox" v-if="playersCount === 2" v-model="botOpponent" id="bot-opponent-checkbox">
+                            <label v-if="playersCount === 2" for="bot-opponent-checkbox">
+                                <span v-i18n>Opponent is a bot</span>
+                            </label>
+
                             <input type="checkbox" v-model="randomFirstPlayer" id="randomFirstPlayer-checkbox">
                             <label for="randomFirstPlayer-checkbox">
                                 <span v-i18n>Random first player</span>
@@ -451,7 +456,7 @@
                                     <div>
                                       <div :class="'form-group col6 create-game-player '+getPlayerContainerColorClass(newPlayer.color)">
                                           <div>
-                                              <input class="form-input form-inline create-game-player-name" :placeholder="getPlayerNamePlaceholder(index)" v-model="newPlayer.name" >
+                                              <input class="form-input form-inline create-game-player-name" :placeholder="getPlayerNamePlaceholder(index)" v-model="newPlayer.name" :disabled="isBotSeat(index)" >
                                           </div>
                                           <div class="create-game-page-color-row">
                                               <template v-for="color in PLAYER_COLORS" :key="color">
@@ -589,7 +594,7 @@ import {GameId, JSONObject} from '@/common/Types';
 import {AgendaStyle} from '@/common/turmoil/Types';
 import PreferencesIcon from '@/client/components/PreferencesIcon.vue';
 import {getCard} from '@/client/cards/ClientCardManifest';
-import {BoardNameType, NewGameConfig, NewPlayerModel} from '@/common/game/NewGameConfig';
+import {BOT_PLAYER_NAME, BoardNameType, NewGameConfig, NewPlayerModel} from '@/common/game/NewGameConfig';
 import {vueRoot} from '@/client/components/vueRoot';
 import {CreateGameModel} from './CreateGameModel';
 import {paths} from '@/common/app/paths';
@@ -613,6 +618,8 @@ type Refs = {
 type FormModel = {
   preludeToggled: boolean;
   uploading: boolean;
+  /** Nur bei genau 2 Spielern: der zweite Spieler wird vom Python-Bot gesteuert. */
+  botOpponent: boolean;
 };
 
 export default defineComponent({
@@ -622,6 +629,7 @@ export default defineComponent({
       ...defaultCreateGameModel(),
       preludeToggled: false,
       uploading: false,
+      botOpponent: false,
     };
   },
   components: {
@@ -845,6 +853,10 @@ export default defineComponent({
     getPlayers(): Array<NewPlayerModel> {
       return this.players.slice(0, this.playersCount);
     },
+    /** Ist dieser Platz der Bot-Platz? (2 Spieler + Bot-Haken -> immer der ZWEITE Spieler) */
+    isBotSeat(index: number): boolean {
+      return this.playersCount === 2 && this.botOpponent === true && index === 1;
+    },
     isRandomMAEnabled(): Boolean {
       return this.randomMA !== RandomMAOptionType.NONE;
     },
@@ -957,6 +969,12 @@ export default defineComponent({
     },
     async serializeSettings() {
       let players = this.players.slice(0, this.playersCount);
+
+      // Bot-Spieler eindeutig benennen, BEVOR die Liste gemischt wird. Der Server findet ihn
+      // dann ueber den Namen (der Index waere nach dem Shuffle unbrauchbar).
+      if (this.playersCount === 2 && this.botOpponent) {
+        players = players.map((p, i) => (i === 1 ? {...p, name: BOT_PLAYER_NAME} : p));
+      }
 
       if (this.randomFirstPlayer) {
         // Shuffle players array to assign each player a random seat around the table
@@ -1207,6 +1225,8 @@ export default defineComponent({
 
       const dataToSend: NewGameConfig = {
         players,
+        // Bot-Gegner nur in 2-Spieler-Partien (der Server lehnt alles andere ab).
+        botOpponent: this.playersCount === 2 ? this.botOpponent : false,
         expansions: this.expansions,
         draftVariant,
         showOtherPlayersVP,

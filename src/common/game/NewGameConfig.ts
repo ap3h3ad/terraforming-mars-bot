@@ -10,6 +10,13 @@ import {Expansion} from '../cards/GameModule';
 
 export type BoardNameType = BoardName | RandomBoardOption;
 
+/**
+ * Name des vom Bot gesteuerten Spielers. Der Server identifiziert den Bot-Spieler UEBER DIESEN
+ * NAMEN und nicht ueber den Index: das Frontend MISCHT die Spielerliste, wenn
+ * `randomFirstPlayer` aktiv ist -> ein Index waere mal der Bot und mal der Mensch.
+ */
+export const BOT_PLAYER_NAME = 'Bot';
+
 export interface NewPlayerModel {
   name: string;
   color: Color;
@@ -81,4 +88,10 @@ export interface NewGameConfig {
   customCeos: Array<CardName>;
   startingCeos: number;
   startingPreludes: number;
+
+  /**
+   * Nur bei genau 2 Spielern: der zweite Spieler wird von einem Python-Bot gesteuert.
+   * Der Server startet ihn nach der Spielerstellung (src/server/bot/BotLauncher.ts).
+   */
+  botOpponent?: boolean;
 }
