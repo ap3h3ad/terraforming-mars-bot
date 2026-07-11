@@ -250,10 +250,12 @@ export class MarsBoard extends Board {
 
   public getAvailableVolcanicSpaces(player: IPlayer, canAffordOptions?: CanAffordOptions): ReadonlyArray<Space> {
     const spaces = this.getAvailableSpacesOnLand(player, canAffordOptions);
-    if (this.volcanicSpaceIds.length > 0) {
-      return spaces.filter((space) => space.volcanic === true);
-    }
-    return spaces;
+    // HOUSE RULE: auf VERFUEGBARE Vulkan-Felder beschraenken; sind keine verfuegbar
+    // (alle belegt ODER Board ohne Vulkane), auf alle freien Landfelder zurueckfallen.
+    // Weicht bewusst von der offiziellen Regel ab (Lava Flows sonst bei belegten Bergen
+    // unspielbar) -> macht Lava Flows immer spielbar, solange irgendein Landfeld frei ist.
+    const volcanic = spaces.filter((space) => space.volcanic === true);
+    return volcanic.length > 0 ? volcanic : spaces;
   }
 
   /**
