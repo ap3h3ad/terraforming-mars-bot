@@ -61,21 +61,59 @@ Python 3.10 is a hard minimum: the bot uses `X \| Y` type annotations that are e
 import, so 3.8 and 3.9 fail immediately. Note that some distributions still ship an older
 `python3` — check with `python3 --version` before you start.
 
+### Installing Node and Python on a fresh Linux server
+
+The distribution packages are usually too old — Node 22 is required, and `apt install npm` pulls in
+an older Node. On Debian or Ubuntu, as root:
+
+```bash
+apt update
+apt install -y curl ca-certificates git
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs
+node -v          # must print v22.x
+
+python3 --version                     # must be 3.10 or newer
+apt install -y python3-requests       # the bot's only dependency
+```
+
+`requests` is installed from the distribution on purpose: recent Ubuntu and Debian releases ship
+`python3` without `pip`, and even with `pip` installed a system-wide `pip install` is refused
+(`externally-managed-environment`, PEP 668). If you prefer pip, create a virtualenv and point
+`BOT_PYTHON` at its interpreter. If `python3` itself is older than 3.10 (Ubuntu 20.04 ships 3.8),
+install a newer interpreter and set `BOT_PYTHON` accordingly.
+
+A quick smoke test that covers the Python version, `requests` and the bot files in one go:
+
+```bash
+cd bot && python3 tm_mcts_mp.py --help && cd ..
+```
+
 ### Setup
 
 ```bash
 npm install
+
+# the database driver (better-sqlite3) is an OPTIONAL dependency: if no prebuilt binary
+# matches your platform, npm install still succeeds and the server only fails later.
+node -e "require('better-sqlite3'); console.log('sqlite ok')"
+# on error: apt install -y build-essential python3   and run npm install again
+
 npm run build
 
 # install the bot's only dependency
 python3 -m pip install requests
 
-# enable the bot
-cp .env.sample .env
+# enable the bot — create .env only if you do not have one yet,
+# an existing .env must NOT be overwritten (it holds your PORT, TLS paths, ...)
+[ -f .env ] || cp .env.sample .env
 echo "BOT_ENABLED=1" >> .env
 
 npm run start
 ```
+
+If you already run this server and have a `.env`, only add the `BOT_ENABLED=1` line — do not
+replace the file.
 
 Then open the server, create a **2 player** game, tick **"Opponent is a bot"** in the options and
 start the game. The checkbox only appears for 2 player games; the bot is not available for solo or
