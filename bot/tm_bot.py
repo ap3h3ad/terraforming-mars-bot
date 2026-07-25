@@ -39,6 +39,26 @@ except ImportError:
 def param_progress_from_state(state: dict) -> float:
     return _param_progress_fn(state.get("game", {}))
 
+
+def hand_cards(state: dict) -> list:
+    """Die eigenen Handkarten.
+
+    WICHTIG (18.07., apeheads Einwand + im Server-Repo verifiziert): Der Server
+    liefert die Handkarten auf der OBERSTEN Ebene des PlayerViewModel, nicht unter
+    thisPlayer! Siehe src/common/models/PlayerModel.ts: `ViewModel.thisPlayer` ist ein
+    PublicPlayerModel und hat NUR `cardsInHandNbr` (die Anzahl, Z.44); das Feld
+    `cardsInHand` mit den echten Karten sitzt in `PlayerViewModel` (Z.90), also
+    state["cardsInHand"]. Gebaut wird es in ServerModel.getPlayerModel (Z.98) fuer den
+    ANGEFRAGTEN Spieler - pollt man mit einer fremden playerID, bekommt man deren Hand.
+
+    `player.get("cardsInHand")` auf thisPlayer lieferte darum IMMER eine leere Liste
+    und machte den Bot an mehreren Stellen still handblind."""
+    h = state.get("cardsInHand")
+    if h:
+        return list(h)
+    # Fallback, falls eine Server-Version es doch im Spielerobjekt fuehrt
+    return list((state.get("thisPlayer") or {}).get("cardsInHand") or [])
+
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
@@ -49,6 +69,23 @@ POST_WAIT      = 2
 ERROR_WAIT     = 6
 MAX_API_ERRORS = 5
 MC_RESERVE     = 8
+
+# ── KAUFEN IST OPTIONALITAET, NICHT SOFORTSPIEL ────────────────────────────────────────────
+# Gemessen (A/A-Diagnose, 80 Partien): Der Bot kauft nur 56 % des Angebots (real eher 40 %,
+# weil choose_cards_to_buy bei tl<=2 vor dem Zaehler aussteigt) und spielt 1,3 Karten/Gen --
+# apehead spielt 3,3. Dabei passt der Bot nur in 1,2 % der Faelle, obwohl eine Karte spielbar
+# waere: Er spielt ALLES, was er hat. Er hat nur zu wenig.
+# Ursache: reserve = MC_RESERVE + play_reserve, wobei play_reserve der volle SPIELPREIS der
+# billigsten lohnenden Karte ist. Der Bot darf eine Karte fuer 3 M€ also nur kaufen, wenn er
+# sie SOFORT auch ausspielen koennte (8 + 12 + 3 = 23 M€ fuer EINEN Kauf). Sein Kontostand
+# liegt mitten im Spiel aber bei 0-18 M€ (gemessen ueber 4 Partien) -> Budget 0 -> kein Kauf,
+# Generation fuer Generation.
+# Das ist konzeptionell falsch: Man kauft eine Karte fuer 3 M€ und spielt sie zwei
+# Generationen spaeter. Der Bot beweist das selbst -- er endet mit 6,7 Handkarten.
+# Die Qualitaetsschwelle BUY_MIN_SCORE bleibt unangetastet: er kauft weiter nur, was er fuer
+# lohnend haelt. Er darf es jetzt auch tun.
+LEVER_BUY_OPTIONALITY = False   # 17.07. Isolationstest: nur DRAW_VALUE soll wirken
+BUY_PLAY_RESERVE_FRAC = 0.0   # 1.0 = alt (Karte muss sofort spielbar sein), 0.0 = reine Optionalitaet
 # Endgame-VP-Boden (Variante A): In der letzten Generation ist nicht ausgegebenes
 # Geld bis auf den Tiebreaker verloren. 1 fester VP ist dann 3.5 wert (DB-Median
 # brutto/vp ueber 96 reine VP-Karten), OHNE Kostenabzug. Nur feste vp>0.
@@ -63,6 +100,32 @@ CARD_PLAY_SCALE = 3.0
 # schlaegt -> Kauf lohnt erst ab raw > 21/3 = 7. Schwelle 0 fuehrte zu
 # 62% toten Kaeufen (gemessen, Lauf 2026-06-05).
 BUY_MIN_SCORE   = 0.5
+
+# ---------------------------------------------------------------------------
+# EXTREM-LEVER (17.07., Kausalitaetstest): "Immer uebertreiben". Der Schatten-Bot
+# zeigte, dass apehead (staerker) in der SPAETPHASE weiter Karten kauft/spielt,
+# waehrend der Bot dort GAR NICHTS kauft (harte tl<=2-Regel + BUY_MIN_SCORE-Schwelle,
+# die spaet alles ablehnt). Frage: ist "viel kaufen" KAUSAL wertvoll oder nur ein
+# SYMPTOM von Staerke (bessere Engine finanziert mehr Kaeufe)? Der Extremtest trennt
+# das: LEVER_BUY_ALL kauft JEDE angebotene Karte, egal welcher Score, ohne Spaetphasen-
+# Stopp. Wird der Bot damit gegen apehead sichtbar STAERKER -> Kaufen ist kausal ->
+# sauberen Lever bauen. Gleich/schwaecher -> Kaufen war nie der Treiber, Umbau gespart.
+# HARDCODED-Unsinn fuer den echten Einsatz, NUR fuer den Test. Default False.
+LEVER_BUY_ALL   = False
+
+# ---------------------------------------------------------------------------
+# SAUBERER LEVER (17.07., nach dem LEVER_BUY_ALL-Extremtest): Der Extremtest zeigte,
+# dass SPAETES Kaufen den Bot naeher an apehead bringt (Ø75% vs 56% der VP), aber
+# blind ALLES kaufen nicht optimal ist (Junk bindet Geld/Zuege -> kein zuverlaessiger
+# Sieg). LEVER_BUY_VS_PASS hebt NUR das harte `tl<=2: return []`-Kaufverbot auf; die
+# normale BUY_MIN_SCORE=0.5-Schwelle bleibt und haelt den Junk ohnehin draussen.
+# WARUM nur das Verbot (nicht auch die Schwelle senken): Die Schatten-Daten (3 Partien)
+# zeigen, dass in der Spaetphase regelmaessig gute Karten angeboten werden, die der Bot
+# POSITIV scort (Food Factory 31, Predators 44, AI Central 31) - aber das tl<=2-Verbot
+# laesst ihn GAR NICHT kaufen. Eine Schwellensenkung 0.5->0 brachte fast nichts (die
+# Karten scoren klar positiv ODER klar negativ, kaum dazwischen). Der echte Hebel ist
+# allein das Verbot. Minimaler Eingriff (apeheads Regel "aendere nur was noetig ist").
+LEVER_BUY_VS_PASS = True
 # Grünflaechen-Untergrenze (Diagnose 2026-06-15): ungenutztes M€ fliesst sonst in
 # SP-Grünflaechen (~23 M fuer ~2 VP, Netto ~-13 M-aequiv.). Hat der Bot M€, das er
 # ohnehin so verbrennen wuerde, ist fast jede Karte der bessere M€-Einsatz. Darum
@@ -99,6 +162,22 @@ SP_COST_WEIGHT  = 1.0   # SP tragen VOLLE Kosten wie Karten (fair; Faktor damit 
 # genutzt wird. < 1.0 = Tote-Kaeufe-Waechter: der Bot aktiviert nicht jede
 # Generation (Zug-Konkurrenz, fehlende Eingaberessourcen) -> abgezinst.
 ACTION_ACTIVATION_RATE = 0.5
+
+# ── ENERGIE AKKUMULIERT NICHT ──────────────────────────────────────────────────────────────
+# TS Player.runProductionPhase(): `this.heat += this.energy; this.energy = 0;` -- Energie wird
+# am Generationsende RESTLOS in Waerme umgewandelt. Wer 1 Energieproduktion hat, kann eine
+# Aktion mit `spend: {energy: 6}` (Physics Complex) NIE ausfuehren, auch nicht alle 6 Gen.
+# Der alte Treibstoff-Waechter rechnete linear (fuel = prod/amt = 1/6 = 0.17) und unterstellte
+# damit Akkumulation -> Physics Complex mit 1 Energie-Prod bekam +7.7, mit 3 sogar +53.
+# Betrifft 13 Karten (Physics Complex 6, Steelworks/Ore Processor/Ironworks 4, Water Splitting
+# Plant/Ozone Generators 3 ...). NUR Energie -- Waerme/Pflanzen/Stahl/Titan akkumulieren
+# wirklich, dort ist das lineare Modell richtig.
+# KEINE harte Sperre (Energieproduktion baut man auf -> §8-Fehlerklasse), sondern Restwert:
+ENERGY_RAMP_FUEL = 0.25   # Restwert, wenn die Energieproduktion noch fehlt, aber erreichbar ist
+ENERGY_GAP_MAX   = 3      # ab so vielen fehlenden Produktionsschritten: wertlos
+# Ausnahme: Supercapacitors laesst den Besitzer waehlen, wie viel Energie er in Waerme wandelt
+# -> mit dieser Karte akkumuliert Energie doch, das lineare Modell bleibt korrekt.
+_ENERGY_KEEPER = "Supercapacitors"
 
 # Kuratierte Ausnahme zum pauschalen +8-"passiver-ACTIVE-Effekt"-Floor: Karten vom Typ
 # ACTIVE mit action_once=0, die WEDER einen echten passiven Effekt haben NOCH eine lohnende
@@ -143,6 +222,47 @@ PURSUE_BONUS_CAP = 4.0
 # netto-negative Handkarten zu ihrem GROSS-Wert bewertet (Kostenabzug entfaellt) statt
 # zu horten. Kein Magic-Bonus; die Staerke IST der reale Zugwert. Ein sweepbarer Param.
 LEVER_IDLE   = True     # SP- UND Karten-Idle: gross-Wert bei Leerlauf
+
+# ---------------------------------------------------------------------------
+# LEVER_LATE_TR (17.07., aus dem Schatten-Diff): Der bestehende LEVER_IDLE senkt die
+# SP-Kosten auf 0 (gross-Wert), ABER nur wenn KEINE positive Karte spielbar ist
+# ("not played_positive"). apehead (staerker) macht Terraform-SPs ZUSAETZLICH zum
+# Kartenspiel: 72 von 78 seiner bezahlten TR-Zuege liegen in Gen 9+. Begruendung
+# (apehead): ab der Spielmitte wird Geld zunehmend wertlos - ungenutztes M€ ist am
+# Ende NICHTS wert, jedes TR dagegen 1 VP. Die Opportunitaetskosten-Rechnung
+# (18 M€ fuer einen 10-M€-Wert) stimmt frueh, aber nicht mehr spaet.
+# LEVER_LATE_TR senkt darum cost_weight in der SPAETPHASE unabhaengig davon, ob noch
+# eine Karte spielbar ist. Wirkt auf ALLE Terraform-SPs (Ozean/Temperatur/Greenery/
+# City/Venus-AirScrapping), weil sie alle ueber cost_weight in score_action laufen.
+#
+# SPIELERZAHL-UNABHAENGIG (apeheads Einwand 17.07.): Die "Spaetphase" wird NICHT ueber
+# turns_left bestimmt! turns_left = lastSoloGeneration(Default 14) - generation, und in
+# Mehrspielerpartien gibt es kein lastSoloGeneration -> der Default 14 ist eine reine
+# 2P-Annahme (13-16 Gen). Eine 6P-Partie dauert nur 7-9 Gen; dort waere turns_left am
+# Spielende noch 5-6 und der Lever wuerde NIE greifen. Stattdessen: param_progress_from_state
+# = Terraforming-Fortschritt ueber die globalen Parameter (Sauerstoff/Temperatur/Ozeane,
+# 0.0 = Start, 1.0 = alle voll = Spielende). Das misst den ECHTEN Spielfortschritt,
+# unabhaengig von Spielerzahl und Partiedauer - in 2P wie in 6P.
+# LATE_TR_PROGRESS ist ein BEGRUENDETER STARTWERT, kein gemessener: der Schatten-Bot
+# loggt param_progress jetzt mit, damit sich empirisch bestimmen laesst, bei welchem
+# Fortschritt apehead auf TR-Ernte umschaltet. Danach justieren.
+# AKTIVIERT 19.07. (apeheads Entscheidung, ein Ding nach dem anderen). Zielgroesse ist
+# NICHT die VP-Marge, sondern die Spaetphasen-Neigung aus analyze_late_tr.py:
+# Kartenspiel : TR-Ernte soll von 86:14 Richtung apeheads 48:52 wandern. Der TR-Rueckstand
+# von -19.0 TR je Partie ist der groesste Einzelposten der VP-Bilanz.
+LEVER_LATE_TR        = False
+LATE_TR_PROGRESS     = 0.50   # ab 50 % Terraforming-Fortschritt sind SP-Kosten reduziert
+# RUECKNAHME (18.07., aus der Verhaltensvalidierung): cost_weight=0.0 liess den Bot
+# UEBERSCHIESSEN. Gemessen ueber 400+ Entscheidungspunkte, Spaetphase (progress>=0.5),
+# Verhaeltnis Kartenspiel:TR-Ernte — apehead 55:45, Bot ohne Lever 85:15 (30 Punkte zu
+# wenig TR), Bot mit cost_weight=0.0 dann 47:53 (8 Punkte zu VIEL TR). Ein Teilgewicht
+# statt 0 bremst die SPs wieder etwas ein, ohne die Spaetphasen-Blindheit
+# zurueckzuholen. 0.25 ist ein justierter Startwert: erhoehen -> weniger SPs.
+LATE_TR_COST_WEIGHT  = 0.25
+# Verkaufs-Schwelle in fruehen Generationen (siehe Begruendung im Verkaufs-Handler):
+# ohne Engine scort fast jede Karte negativ, -2.0 wuerde die halbe Starthand treffen.
+SELL_EARLY_GENS       = 4
+SELL_THRESHOLD_EARLY  = -25.0
 IDLE_RESERVE = 25.0     # so viel MC fuer kuenftige Karten behalten; darueber gilt Geld als leer
 # Meilenstein-Abschluss (allein regressiv -> AUS; via _milestone_complete_bonus):
 LEVER_MS_COMPLETE = False
@@ -243,6 +363,177 @@ ACQUIRE2_RESERVE_FRAC     = 1.0   # 1.0 = altes Verhalten (volle best_cost-Reser
 #   flache Kosten (8), fenster-bewusste Dringlichkeit (qualifizierten Meilenstein sichern,
 #   bevor die 3 Slots voll sind), und Pursue-Zweig (gap 2-3, Frontrunner, alignment-gated).
 LEVER_MILESTONE           = True
+
+# ---------------------------------------------------------------------------
+# LEVER_MILESTONE_GREEDY (18.07., EXTREMTEST nach apeheads "erst uebertreiben"-Methode)
+# BEFUND, der ihn ausgeloest hat: Der Bot hatte in einer Menschpartie ab Gen 9 TR=35,
+# also Terraformer ERFUELLT, und claimte ihn DREI Generationen lang nicht - bis apehead
+# ihn wegschnappte. Der Claim-Mechanismus ist NICHT kaputt (im nachgestellten Zustand
+# claimt der Bot korrekt); es ist der SCORE-VERGLEICH: net = 25 (5 VP) - 8 (Kosten) = 17,
+# und der urgency-Aufschlag greift nur, wenn ein Gegner <=1 Schritt entfernt ist. Steht
+# der Gegner weiter weg, gewinnt jede gute Karte den Vergleich.
+# DER DENKFEHLER: Ein Meilenstein wird wie eine normale Aktion bewertet, ist aber
+# EXKLUSIV und VERGAENGLICH - eine Karte bleibt naechste Generation spielbar, ein
+# Meilenstein ist weg, sobald der Gegner ihn nimmt. Und Gegner-Abstaende schrumpfen
+# stetig (apeheads Abstand: 6 TR -> 0 in drei Generationen); urgency schaut aber nur auf
+# den MOMENTANEN Abstand, nie auf dessen Wachstum.
+# DAS EXTREM: erfuellt + freier Slot -> IMMER claimen, ohne Score-Vergleich. Uebersprungen
+# wird auch die turns_left-Sperre (sie traegt den bekannten 2P-Bias und blockiert spaete
+# Claims, obwohl 5 VP am Spielende genauso zaehlen). Geldpruefung und 3er-Deckel bleiben.
+# KAUSALITAETSTEST: Bringt das Extrem VP-Marge, lohnt die massvolle Version (Aufschlag
+# statt Zwang). Bringt es nichts, war die Verzoegerung nie teuer.
+LEVER_MILESTONE_GREEDY    = False
+
+# ---------------------------------------------------------------------------
+# LEVER_CITY_ADJACENCY (18.07., apeheads Beobachtung): Der Staedte-Malus in
+# score_action("city_sp") war pauschal (-5 je bereits gebauter Stadt) und frass damit
+# auch sichere Adjazenz-VP auf -> ab der 3. Stadt lehnte der Bot JEDE Stadt ab, auch
+# eine mit 5 angrenzenden eigenen Gruenflaechen. Neu daempft der Malus nur den
+# Grundwert, nicht die Adjazenz-VP. Erwartung: mehr gute Staedte, keine schlechten
+# (die verhindert die bonus-getriebene Basis schon).
+LEVER_CITY_ADJACENCY      = True
+
+# ---------------------------------------------------------------------------
+# LEVER_ADJACENCY_VP (19.07.): Adjazenz-VP bei der FELD-Wahl mit 5.0 statt 3.0
+# bewerten - konsistent zur Bot-Konvention 1 VP = 5 M und zur bereits vorhandenen
+# 5.0-Gewichtung bei "commercial". apeheads Argument: der Bot soll nicht auf
+# apeheads Niveau spielen, sondern darueber - ein Vorsprung bei der billigsten
+# VP-Quelle ist ein legitimer Weg, die schwaechere Engine auszugleichen.
+LEVER_ADJACENCY_VP        = True
+
+# ---------------------------------------------------------------------------
+# LEVER_MC_SCARCITY (19.07.): M-Produktion aufwerten, solange der Bot fast keine
+# hat. Adressiert die von apehead beobachtete Schwankung ("mal sehr stark, mal
+# sehr schwach"): der Bot hat keine Prioritaetsregel fuer den Einkommensaufbau
+# und nimmt, was das Deck ihm gibt. FLOOR = ab wie viel M-Produktion der Bonus
+# ausleuft, BONUS = Aufschlag bei Produktion 0 (0.75 = plus drei Viertel).
+LEVER_MC_SCARCITY         = True
+
+# ---------------------------------------------------------------------------
+# LEVER_AWARD_SCALE (20.07.): Award-Score in dieselbe Einheit bringen wie
+# Kartenscores (CARD_PLAY_SCALE). Ohne das verliert jeder Award ab dem zweiten
+# gegen beliebige Kartenplays - gemessen an 3 Partien blieben vier klar
+# gefuehrte Awards ungefundet (Landlord 17:11, Banker 16:6, Miner 8:4,
+# Entrepreneur 5:1), Award-Bilanz -6.7 VP.
+LEVER_AWARD_SCALE         = True
+
+# ---------------------------------------------------------------------------
+# LEVER_ACTION_COST (20.07.): Kosten einer Kartenaktion (`action_prod`) beim
+# Kauf gegenrechnen. Wurde bislang nur bei der Ausfuehrung gelesen, nicht bei
+# der Bewertung - Refugee Camps galt dadurch als 158 wert statt netto null.
+LEVER_ACTION_COST         = True
+
+# ---------------------------------------------------------------------------
+# LEVER_RESOURCE_SYNERGY (20.07.): Ressourcen-Sammelkarten kontextabhaengig
+# bewerten statt mit festem Wert. FLOOR = ab wie vielen gleichartigen Karten im
+# Tableau der volle Wert gilt, DAMPING = Abschlag, wenn die Karte voellig allein
+# steht (0.5 = halber Aktionswert). Grundlage: apeheads Einschaetzung, dass diese
+# Karten einzeln schwach und im Verbund stark sind.
+# LEVER_REDEEM (20.07.): Einloese-Optionen ("Ressourcen abgeben -> Ertrag") in
+# handle_or ueberhaupt bewerten. Ohne den Zweig griff der Bot zum Fallback Index 0
+# und sammelte endlos weiter - apehead beobachtete 16 ungenutzte Mikroben (48 M).
+LEVER_REDEEM              = True
+REDEEM_PROGRESS           = 0.75   # ab 75 % Terraforming-Fortschritt einloesen
+REDEEM_CASH_FLOOR         = 8.0    # ... oder wenn weniger als 8 M auf der Hand sind
+_REDEEM_RE = __import__("re").compile(
+    r"gain\s*(?:triple\s*amount\s*of\s*)?(\d+)\s*(?:m€|mc|megacredit)"
+    r"|(\d+)\s*(?:m€|mc|megacredit).{0,20}per")
+
+LEVER_RESOURCE_SYNERGY    = True
+RES_SYNERGY_FLOOR         = 2.0
+RES_SYNERGY_DAMPING       = 0.5
+
+# REINE SAMMLER - Karten, deren Aktion NUR eine Ressource ablegt, ohne dass daraus
+# direkt TR, Geld oder ein Kartenzug wird. Diese Liste ist KURATIERT, weil sich das
+# nicht aus den Daten ableiten laesst: drei Extraktionsversuche im Servercode sind
+# gescheitert (Marker auf increaseVenusScaleLevel & Co. erkennt Nitrite Reducing
+# Bacteria falsch als Sammler, Dirigibles falsch als Auszahler - der Effekttext
+# erwaehnt Megacredits, ohne welche zu erzeugen).
+# Grundlage sind apeheads Einzelbewertungen vom 20.07. Erweiterbar: eine Karte gehoert
+# hierher, wenn ihre AKTION nur Ressourcen auf Karten legt und der Nutzen erst durch
+# andere Karten entsteht.
+# BEWUSST NICHT enthalten: Jet Stream Microscrappers und Forced Precipitation (2 Floater
+# -> Venusstufe, Senke eingebaut), Nitrite Reducing Bacteria (TR), Ecological Zone
+# (Kachel + VP), Livestock und Pollinators (von apehead als stark bestaetigt).
+PURE_COLLECTORS = frozenset({
+    "Dirigibles",            # Floater nur ablegen/verteilen; Zahlungsmodus situativ
+    "Aerial Mappers",        # 1 VP + Karte je zwei Aktivierungen - apehead: zu hoch
+    "Decomposers",           # Mikroben, 1 VP je 3 - apehead: mittel
+    "Venusian Animals",      # Tiere ueber Science-Tags - apehead: niedrig
+    "Floating Habs",         # 0.5 M Ertrag je Aktivierung - apehead: eher schwach
+    "Jovian Lanterns",       # 7 Aktivierungen bis Break-even - apehead: schwach
+    "Ocean Sanctuary",       # 1 VP bei Kosten 12 - apehead: schwach
+    "Extremophiles",         # 1 VP je 3 Generationen - apehead: mittel
+    "Sub-Crust Measurements",# 7 Aktivierungen bis Break-even - apehead: eher schwach
+    "Solarpedia",            # 1 VP je 3 Aktivierungen - apehead: mittelmaessig
+    "Pets",                  # lohnt erst ab 6 Staedten - apehead: mittelmaessig
+})
+
+# ---------------------------------------------------------------------------
+# LEVER_LATE_TR_NO_CITY (20.07.): Stadt-Projekte vom Spaetphasen-Rabatt des
+# LEVER_LATE_TR ausnehmen - eine Stadt bringt kein TR, gehoert also nicht zur
+# TR-Ernte, die der Lever steuern soll.
+# ZURUECKGENOMMEN 20.07. nach dem Wirkungstest: Ohne den Rabatt faellt city_sp in der
+# Spaetphase auf 0.0 (das Geld liegt unter der Reserve) - der Ausschluss macht Staedte
+# also nicht relativ attraktiver, sondern UNMOEGLICH. Genau das Gegenteil der Absicht.
+LEVER_LATE_TR_NO_CITY     = False
+MC_SCARCITY_FLOOR         = 5.0
+MC_SCARCITY_BONUS         = 0.75
+
+# ---------------------------------------------------------------------------
+# LEVER_CITY_POTENTIAL (19.07., apeheads Henne-Ei-Einwand):
+# Nach dem Malus-Fix bewertete der Bot eine Stadt NUR nach bereits liegenden
+# Gruenflaechen -> er baute Staedte erst, wenn 4+ Gruenflaechen da waren. Damit
+# ignorierte er den Hauptgrund, aus dem Staedte FRUEH gebaut werden, und lief in
+# ein Henne-Ei: Gruenflaechen ohne Stadt daneben geben keine Stadt-VP, Staedte
+# ohne Gruenflaechen daneben scorten 0 - keins von beidem kam je zustande.
+# apeheads Praxisgruende fuer fruehe Staedte: (a) Gebietssicherung (an Staedte
+# grenzend darf niemand bauen), (b) Placement-Boni auf dem Feld UND drumherum,
+# (c) Gegner einsperren (ausgeklammert).
+# ZEITLICHE UMKEHR im alten Code: Die MC-Produktion (frueh am meisten wert, weil
+# sie ueber viele Generationen laeuft) war PAUSCHAL mit 9 angesetzt, waehrend die
+# Adjazenz-VP (die erst SPAET entstehen) den Ausschlag gaben. Genau falsch herum.
+# NEU: Grundwert = MC-Produktion x Resthorizont, plus POTENZIAL fuer freie
+# Nachbarfelder (dort koennen spaeter Gruenflaechen entstehen, die dieser Stadt
+# je +1 VP bringen). Das Potenzial ist zeitabhaengig gedaempft - frueh viel, spaet
+# fast nichts - und gedeckelt, weil um ein Feld nur begrenzt Platz ist.
+# A/B-ERGEBNIS 19.07.: VERWORFEN. -3.21 VP [CI -5.67 ... -0.76, SD 7.92, 40 Paare],
+# Champion signifikant besser. FEHLER IN DER UMSETZUNG (Claude): der Lever aenderte ZWEI
+# Dinge gleichzeitig - (a) Grundwert von pauschal 9 auf MC-Produktion x r_eff (frueh also
+# ~14 statt 9, +50 %) und (b) Potenzial fuer freie Nachbarfelder. BEIDE machen fruehe
+# Staedte attraktiver, und genau das kostet: 25 M frueh in eine Stadt statt in die Engine
+# ist teuer, und der Bot hat diese Generationen spaeter nicht mehr. apeheads Argument
+# (Staedte werden frueh aus anderen Gruenden gebaut) bleibt sachlich richtig - nur ueber
+# den SP-Preis von 25 M rechnet es sich offenbar nicht. Wieder aufgreifen nur GETRENNT:
+# erst (a) allein messen, dann (b) allein.
+LEVER_CITY_POTENTIAL      = False
+
+# ---------------------------------------------------------------------------
+# LEVER_CARD_TILE_VALUE (19.07., apeheads Befund):
+# Karten, die eine Kachel legen, wurden OHNE ihren Platzierungswert bewertet - die
+# Entscheidung, ob die Karte gespielt wird, kannte die Qualitaet ihrer Ausfuehrung
+# nicht. Verifiziert: Cupola City scort 3.5, egal ob 5 eigene Gruenflaechen daneben
+# liegen oder keine; das Standardprojekt city_sp sieht denselben Unterschied als
+# 0 -> 12. apeheads Beispiel Lava Flows: 18 M (+3 Kartenkauf) fuer 2 TR = 20 M ist ein
+# Minusgeschaeft, auf einem 2-Pflanzen-Feld wird daraus ein Plus.
+# Standard-Kacheln (Stadt/Gruenflaeche/Ozean) bekommen den vollen _placement_bonus
+# (Adjazenz-VP + Feldbonus), SPEZIAL-Kacheln nur den Feldbonus - sie erzeugen keine
+# Adjazenz-VP. Bei wiederholbaren Aktionen (Aquifer Pumping & Co) zaehlt der Wert je
+# Aktivierung, abzueglich der Aktionskosten.
+# A/B-ERGEBNIS 19.07.: NICHT UEBERNOMMEN. -1.65 VP [CI -4.61 ... +1.31, SD 9.56,
+# 40 Paare, Siege 40:40] - nicht signifikant, Punktschaetzer negativ. AUFFAELLIG ist
+# die SD: 9.56 gegen 5.17 im Lauf davor, also fast die doppelte Streuung. Der Lever
+# macht den Bot nicht besser, sondern unberechenbarer. Plausible Ursache: der Aufschlag
+# ist zu gross (Cupola City 11.9 -> 86.8) UND zu optimistisch - er unterstellt, dass
+# das BESTE Feld beim Ausspielen noch frei ist, was der Gegner haeufig verhindert.
+# Die Luecke selbst ist real (score_card sah den Platzierungswert nachweislich nicht);
+# eine V2 muesste den Wert daempfen und die Feldkonkurrenz einpreisen.
+LEVER_CARD_TILE_VALUE     = False
+
+# ---------------------------------------------------------------------------
+CITY_POTENTIAL_MAX_ADJ    = 3.0    # mehr als 3 spaetere Gruenflaechen je Stadt sind unrealistisch
+CITY_POTENTIAL_CAP        = 0.40   # max. Anteil eines VP (5M), der als Potenzial zaehlt
+MILESTONE_GREEDY_SCORE    = 200.0   # schlaegt praktisch jede Karte/Aktion
 #   LEVER_ALIGN: Kauf-Bias auf Karten, die ein in-Play & gewinnbares Ziel (Meilenstein/Award)
 #   voranbringen - z.B. Legend->Events, Energizer->Energieprod, Builder->Bautags (obs 5/10).
 LEVER_ALIGN               = True
@@ -287,6 +578,24 @@ def load_ml_model(path: str = "tm_model.pt"):
     log.info("ML-Modell geladen (device: %s)", ML_DEVICE)
 
 
+# Der Server liefert Produktion FLACH (megacreditProduction, steelProduction, ...) - ein
+# Feld `production` gibt es in thisPlayer NICHT. Fuenf Stellen lasen player["production"]
+# und bekamen still ein leeres Dict: Pflanzen-Projektion = 0, req_prod nie erfuellt,
+# mc_prod = 0 beim Kauf. (Gleiche Fehlerklasse wie feeds/synergy_adds.)
+_PROD_FIELDS = {"megacredits": "megacreditProduction", "steel": "steelProduction",
+                "titanium": "titaniumProduction", "plants": "plantProduction",
+                "energy": "energyProduction", "heat": "heatProduction"}
+
+
+def player_production(player: dict) -> dict:
+    """Produktions-Dict des Spielers. Akzeptiert beides: bereits normalisiertes
+    `production` (MCTS/tmsim) ODER das flache Server-Schema."""
+    p = player.get("production")
+    if isinstance(p, dict) and p:
+        return p
+    return {res: player.get(field, 0) for res, field in _PROD_FIELDS.items()}
+
+
 def card_info(name: str) -> dict:
     """Gibt Karten-Features zurück, oder leeres Dict wenn unbekannt."""
     return CARD_DB.get(name, {})
@@ -308,21 +617,44 @@ log = logging.getLogger("tm_bot")
 # API
 # ---------------------------------------------------------------------------
 
+# Der aktualisierte Server (~07/2026) antwortet unter --parallel-Last teils langsamer als
+# das alte timeout=10 (34 Read-Timeouts + 15 >600s-Abbrueche in einem 80-Partien-Lauf,
+# 15.07.). Hoeheres Timeout + Retry NUR bei Verbindungs-/Timeout-Fehlern (Anfrage kam nicht
+# an oder Antwort ging verloren -> erneut senden ist sicher). NICHT bei HTTPError (400 etc.,
+# inhaltlich -> Retry braechte denselben Fehler und koennte einen Zug doppelt senden).
+_HTTP_TIMEOUT = 30
+_HTTP_RETRIES = 3
+
 def get_state(base_url: str, player_id: str) -> dict:
-    r = requests.get(f"{base_url}/api/player", params={"id": player_id}, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    last = None
+    for attempt in range(_HTTP_RETRIES):
+        try:
+            r = requests.get(f"{base_url}/api/player", params={"id": player_id},
+                             timeout=_HTTP_TIMEOUT)
+            r.raise_for_status()
+            return r.json()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last = e
+            time.sleep(1.5 * (attempt + 1))
+    raise last
 
 
 def post_input(base_url: str, player_id: str, payload: dict) -> dict:
-    r = requests.post(
-        f"{base_url}/player/input",
-        params={"id": player_id},
-        json=payload,
-        timeout=10,
-    )
-    r.raise_for_status()
-    return r.json()
+    last = None
+    for attempt in range(_HTTP_RETRIES):
+        try:
+            r = requests.post(
+                f"{base_url}/player/input",
+                params={"id": player_id},
+                json=payload,
+                timeout=_HTTP_TIMEOUT,
+            )
+            r.raise_for_status()
+            return r.json()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last = e                       # nur Netz-/Timeout -> sicher erneut senden
+            time.sleep(1.5 * (attempt + 1))
+    raise last
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +664,7 @@ def post_input(base_url: str, player_id: str, payload: dict) -> dict:
 def get_plant_cost(state: dict) -> int:
     corp = state.get("pickedCorporationCard", [])
     if any(c.get("name") == "Ecoline" for c in corp):
-        return 6
+        return 7               # Ecoline senkt Greenery-Kosten auf 7 (NICHT 6 -- war ein Bug)
     return 8
 
 
@@ -425,6 +757,111 @@ _RLOG = os.environ.get("TMBOT_RLOG")
 _rlog_bd: dict = {}   # letzte Engine-Wert-Komponenten je Kartenname (aus score_card)
 _DUMP_WF = os.environ.get("TM_DUMP_WF")   # Diagnose: vollen waitingFor dumpen (verhaltensneutral)
 
+# --- A/B-Telemetrie (ENV TM_TELEM): eine Zeile je Spieler UND Generation. -------------------
+# Beantwortet die Fragen, die die reine VP-Marge NICHT beantwortet: Kippt der Bot in
+# Standardprojekte? Spielt er mehr oder weniger Karten? Baut er frueher TR auf?
+# `module` unterscheidet Challenger (tm_bot) von Champion (tm_bot_champion) -> beide Arme
+# schreiben in dieselbe Datei und sind hinterher trennbar. Rein additiv, KEIN Verhalten.
+_TELEM = os.environ.get("TM_TELEM")
+_TELEM_ZERO = {"sp_spend": 0.0, "sp_n": 0, "cards_n": 0, "last_gen": 0, "card_spend": 0.0,
+               "buy_n": 0, "offer_n": 0, "pass_n": 0, "pass_with_cards_n": 0,
+               "action_n": 0, "sell_n": 0}
+_telem: dict = {}          # pid -> Zaehler (s. _TELEM_ZERO)
+
+# Draft-Repick-Cache (Server-Aenderung ~07/2026): In der Repick-Phase darf man die gedraftete
+# Karte aendern, bis alle gewaehlt haben. choose_draft_card ist NICHT stabil -- der gefahr-Wert
+# (Nutzen fuer den Gegner) schwankt zwischen Anfragen, sodass der Bot zwischen zwei fast
+# gleichwertigen Karten oszilliert (GHG Factories <-> Ants, je 356x) und der Draft nie endet.
+# Loesung: einmal pro Draft-Runde entscheiden und die Wahl festhalten. Schluessel = (pid,
+# sortiertes Kartenset) -- der Pool ist ueber alle Repick-Anfragen derselben Runde konstant,
+# aendert sich aber von Runde zu Runde. Damit sind parallele Partien und beide Bot-Arme sauber
+# getrennt. Cache wird pro Prozess gehalten; unbegrenztes Wachstum ist unkritisch (wenige
+# Dutzend Runden je Partie), aber wir kappen defensiv.
+_draft_choice_cache: dict = {}
+# Karten, die der Server bei einer Draft-Antwort ABGELEHNT hat ("Card <Name> not found").
+# Der Runner traegt sie hier ein; choose_draft_card/handle_card lassen sie danach weg.
+# Grund (apeheads Abstuerze 18.07.): der Bot sendete 4x dieselbe abgelehnte Karte und brach
+# ab. Der Server nennt den Namen im Fehlertext - also genau diese Karte ueberspringen und
+# die naechstbeste nehmen. Wird nach jedem ERFOLGREICHEN Post geleert.
+_draft_rejected: set = set()
+
+def _draft_cache_key(state, cards):
+    pid = state.get("id") or (state.get("thisPlayer") or {}).get("color")
+    names = tuple(sorted(c.get("name", "") for c in cards))
+    return (pid, names)
+
+
+def _telem_note(kind: str, cost: float = 0.0, pid: str | None = None) -> None:
+    """Zaehlt eine gewaehlte Aktion (nur bei gesetztem TM_TELEM)."""
+    if not _TELEM or pid is None:
+        return
+    d = _telem.setdefault(pid, dict(_TELEM_ZERO))
+    if kind == "sp":
+        d["sp_spend"] += cost
+        d["sp_n"]     += 1
+    elif kind == "card":
+        d["cards_n"]    += 1
+        d["card_spend"] += cost           # Druckpreis der gespielten Karte
+    elif kind == "pass":
+        d["pass_n"] += 1
+    elif kind == "pass_with_cards":       # gepasst, OBWOHL eine Karte spielbar gewesen waere
+        d["pass_n"]            += 1
+        d["pass_with_cards_n"] += 1
+    elif kind == "offer":
+        d["offer_n"] += int(cost)         # Karten im Draft-/Research-Angebot
+    elif kind == "action":
+        d["action_n"] += 1                # ACTIVE-Kartenaktion abgedrueckt
+    elif kind == "sell":
+        d["sell_n"] += 1
+    elif kind == "buy":
+        d["buy_n"]   += int(cost)         # tatsaechlich gekaufte Karten
+
+
+def _telem_gen(state: dict) -> None:
+    """Schreibt am GENERATIONS-WECHSEL eine Zeile pro Spieler. Der Aggregator nimmt je
+    (module, pid) die letzte Zeile als Spielende und die Zeile mit gen==6 fuer den
+    TR-Zwischenstand."""
+    if not _TELEM:
+        return
+    try:
+        game = state.get("game") or {}
+        me   = state.get("thisPlayer") or {}
+        pid  = state.get("id")                     # partie-EINDEUTIG (nicht die Farbe!)
+        gen  = game.get("generation", 0)
+        d = _telem.setdefault(pid, dict(_TELEM_ZERO))
+        if gen == d["last_gen"]:
+            return
+        d["last_gen"] = gen
+        prod_sum = sum(me.get(f, 0) for f in
+                       ("megacreditProduction", "steelProduction", "titaniumProduction",
+                        "plantProduction", "energyProduction", "heatProduction"))
+        with open(_TELEM, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "module":   __name__,
+                "pid":      pid,
+                "color":    me.get("color"),
+                "game":     game.get("name"),
+                "gen":      gen,
+                "tr":       me.get("terraformRating", 0),
+                "mc_prod":  me.get("megacreditProduction", 0),
+                "prod_sum": prod_sum,
+                "tableau":  len(me.get("tableau") or []),
+                "cards_played":  d["cards_n"],
+                "card_spend":    round(d["card_spend"], 1),
+                "cards_bought":  d["buy_n"],
+                "cards_offered": d["offer_n"],
+                "pass_n":            d["pass_n"],
+                "pass_with_cards_n": d["pass_with_cards_n"],
+                "actions_used":      d["action_n"],
+                "cards_sold":        d["sell_n"],
+                "hand":     me.get("cardsInHandNbr", len(state.get("cardsInHand") or [])),
+                "sp_spend": round(d["sp_spend"], 1),
+                "sp_n":     d["sp_n"],
+                "r_eff":    round(_remaining_gens(game)[0], 1),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 # Aus den TS-Kartendefinitionen extrahiert: Karten, deren Aktion REIN "+Ressource auf sich
 # selbst" ist (kostenlos, kein Steal, keine Bedingung). Solche Aktivierungen sind IMMER
 # besser als Pass -> duerfen nicht am Pass-Floor (score_action("pass")=4) scheitern.
@@ -499,6 +936,513 @@ def _idle_engine_log(state: dict, options: list, player: dict) -> None:
         pass
 
 
+# ── ANGRIFFS-KARTEN: Der Bot sah bisher NUR die eigenen Kosten, nicht den Schaden beim
+# Gegner. Von 50 Angriffskarten im TS war der Angriff in 49 gar nicht erfasst -> sie wurden
+# stark negativ bewertet (Herbivores -15, Birds -13, Ants -12, Hackers -8) und praktisch nie
+# gespielt. Aus den TS-Kartendefinitionen extrahiert: was die Karte dem Gegner WEGNIMMT.
+#
+# WICHTIG (Damian): Der Wert ist gedeckelt durch das, was der Gegner TATSAECHLICH hat.
+# Deimos Down entfernt 8 Pflanzen - hat der Gegner nur 2, sind es eben nur 2 (= 4 M).
+# Darum wird das hier zur LAUFZEIT berechnet und nicht statisch in die card_db geschrieben.
+_ATTACK = {
+    # Pflanzen des Gegners entfernen (einmalig beim Ausspielen)
+    "Aerial Lenses":        {"plants": 2},
+    "Asteroid":             {"plants": 3},
+    "Big Asteroid":         {"plants": 4},
+    "Comet":                {"plants": 3},
+    "Deepnuking":           {"plants": 3},
+    "Deimos Down":          {"plants": 8},
+    "Giant Ice Asteroid":   {"plants": 6},
+    "Impactor Swarm":       {"plants": 2},
+    "Metallic Asteroid":    {"plants": 4},
+    "Mining Expedition":    {"plants": 2},
+    "Small Asteroid":       {"plants": 2},
+    "Virus":                {"plants": 5},
+    # Produktion des Gegners senken (einmalig beim Ausspielen). Auch bei Birds/Fish/
+    # Herbivores/Small Animals ist der Angriff EINMALIG (beim Ausspielen) - der Tier-Motor
+    # laeuft ueber action_once, der Angriff ist ein Bonuseffekt obendrauf.
+    "Asteroid Mining Consortium": {"prod": {"titanium": 1}},
+    "Biomass Combustors":   {"prod": {"plants": 1}},
+    "Birds":                {"prod": {"plants": 2}},
+    "Cloud Seeding":        {"prod": {"heat": 1}},
+    "Earthquake Machine":   {"prod": {"plants": 1}},
+    "Energy Tapping":       {"prod": {"energy": 1}},
+    "Fish":                 {"prod": {"plants": 1}},
+    "Great Escarpment Consortium": {"prod": {"steel": 1}},
+    "Hackers":              {"prod": {"megacredits": 2}},
+    "Hackers:u":            {"prod": {"megacredits": 2}},
+    "Heat Trappers":        {"prod": {"heat": 2}},
+    "Herbivores":           {"prod": {"plants": 1}},
+    "Power Supply Consortium": {"prod": {"energy": 1}},
+    "Small Animals":        {"prod": {"plants": 1}},
+    "Sub-zero Salt Fish":   {"prod": {"plants": 1}},
+}
+ATTACK_PLANT_VALUE = 2.0   # 1 zerstoerte Pflanze  = 2 M  (Damians Tabelle)
+ATTACK_PROD_VALUE  = 4.0   # 1 gesenkte Gegner-Produktion = 4 M
+
+
+# ── DYNAMISCHE EFFEKTE ("X pro Tag/Stadt/Kolonie") ─────────────────────────────────────────
+# card_db hat bei diesen Karten LEERE production/stock und nur einen Marker
+# ('production:dynamic') - den der Bot GAR NICHT auswertete. Folge: Er sah nur die KOSTEN.
+# Cartel (1 M€-Prod je Earth-Tag) wurde mit -11 bewertet und nie gekauft.
+#
+# Semantik aus TS/Counter.ts:
+#   tags (default) -> EIGENE Tags, inkl. der Karte selbst ("including this" -> +1)
+#   tags + all     -> Tags ALLER Spieler | tags + others -> nur die der GEGNER
+#   cities         -> ALLE Staedte im Spiel ("for each city tile in play"), nicht nur eigene
+#   cities + where -> 'onmars' / 'offmars'
+#   colonies       -> eigene Kolonien
+#   per: N         -> je N gezaehlte Einheiten 1 Schritt (abgerundet)
+_DYNAMIC = {
+    # what: 'prod' (dauerhafte Produktion) | 'stock' (einmalige Ressourcen)
+    "Advanced Power Grid":  {"what": "prod",  "res": "megacredits", "tags": ["power"]},
+    "Cartel":               {"what": "prod",  "res": "megacredits", "tags": ["earth"]},
+    "Luna Metropolis":      {"what": "prod",  "res": "megacredits", "tags": ["earth"]},
+    "Miranda Resort":       {"what": "prod",  "res": "megacredits", "tags": ["earth"]},
+    "Martian Monuments":    {"what": "prod",  "res": "megacredits", "tags": ["mars"]},
+    "Satellites":           {"what": "prod",  "res": "megacredits", "tags": ["space"]},
+    "Sulphur Exports":      {"what": "prod",  "res": "megacredits", "tags": ["venus"]},
+    "Power Grid":           {"what": "prod",  "res": "energy",      "tags": ["power"]},
+    "Insects":              {"what": "prod",  "res": "plants",      "tags": ["plant"]},
+    "Medical Lab":          {"what": "prod",  "res": "megacredits", "tags": ["building"], "per": 2},
+    "Parliament Hall":      {"what": "prod",  "res": "megacredits", "tags": ["building"], "per": 3},
+    "Lunar Mining":         {"what": "prod",  "res": "titanium",    "tags": ["earth"],    "per": 2},
+    "Worms":                {"what": "prod",  "res": "plants",      "tags": ["microbe"],  "per": 2},
+    "Galilean Waystation":  {"what": "prod",  "res": "megacredits", "tags": ["jovian"], "all": True},
+    "Toll Station":         {"what": "prod",  "res": "megacredits", "tags": ["space"],  "others": True},
+    "Energy Saving":        {"what": "prod",  "res": "energy",      "cities": True},
+    "Zeppelins":            {"what": "prod",  "res": "megacredits", "cities": True, "where": "onmars"},
+    "Off-World City Living":{"what": "prod",  "res": "megacredits", "cities": True, "where": "offmars"},
+    "Orbital Power Grid":   {"what": "prod",  "res": "energy",      "cities": True, "where": "offmars"},
+    "Interplanetary Transport": {"what": "prod", "res": "megacredits", "cities": True, "where": "offmars"},
+    "Cassini Station":      {"what": "prod",  "res": "energy",      "colonies": True},
+    "Ecology Research":     {"what": "prod",  "res": "plants",      "colonies": True},
+    # ── einmalige Ressourcen (stock) ──
+    "Battery Factory":      {"what": "stock", "res": "megacredits", "tags": ["power"]},
+    "Static Harvesting":    {"what": "stock", "res": "megacredits", "tags": ["building"]},
+    "PR Office":            {"what": "stock", "res": "megacredits", "tags": ["earth"]},
+    "Orbital Cleanup":      {"what": "stock", "res": "megacredits", "tags": ["science"]},
+    "Protected Growth":     {"what": "stock", "res": "plants",      "tags": ["power"]},
+    "Robot Pollinators":    {"what": "stock", "res": "plants",      "tags": ["plant"]},
+    "Expedition to the Surface - Venus": {"what": "stock", "res": "megacredits", "tags": ["venus"]},
+    "Diaspora Movement":    {"what": "stock", "res": "megacredits", "tags": ["jovian"], "all": True},
+    "Greenhouses":          {"what": "stock", "res": "plants",      "cities": True},
+    "Molecular Printing":   {"what": "stock", "res": "megacredits", "cities": True},
+    "Aerosport Tournament": {"what": "stock", "res": "megacredits", "cities": True},
+    "Luxury Estate":        {"what": "stock", "res": "titanium",    "cities": True},
+    "Martian Rails":        {"what": "stock", "res": "megacredits", "cities": True, "where": "onmars"},
+    "Weather Balloons":     {"what": "stock", "res": "megacredits", "cities": True, "where": "onmars"},
+    "Ceres Tech Market":    {"what": "stock", "res": "megacredits", "colonies": True},
+    "Colonial Representation": {"what": "stock", "res": "megacredits", "colonies": True},
+    "Venus Allies":         {"what": "stock", "res": "megacredits", "colonies": True},
+    # ── Module, die Damian aktuell nicht spielt (moon/prelude2/starwars) - trotzdem korrekt
+    # bewertet, falls sie aktiviert werden:
+    "HE3 Lobbyists":        {"what": "prod",  "res": "megacredits", "tags": ["moon"]},
+    "Luna Senate":          {"what": "prod",  "res": "megacredits", "tags": ["moon"], "all": True},
+    "Takonda Castle (VII)": {"what": "stock", "res": "megacredits", "tags": ["microbe", "animal"]},
+    "Soil Studies":         {"what": "stock", "res": "plants",      "colonies": True},
+    "Summit Logistics":     {"what": "stock", "res": "megacredits", "colonies": True},
+}
+# Effekte, die BEWUSST nicht in den Tabellen stehen (der Health-Check meldet sie sonst als
+# Luecke). Grund jeweils dahinter - so bleibt nachvollziehbar, dass es kein Versehen ist.
+_EFFECT_IGNORE = {
+    # Trigger auf die TAG-ANZAHL einer Karte (nicht auf einen Tag-TYP) - die _TAG_SHARE-
+    # Schaetzung (Wahrscheinlichkeit je Tag-Typ) passt hier strukturell nicht.
+    "Sagitta Frontier Services": "Trigger auf 'Karte mit GENAU 1 Tag' - Tag-ANZAHL, nicht Tag-Typ",
+    "Spire":                     "Trigger auf 'Karte mit MINDESTENS 2 Tags' - Tag-ANZAHL",
+    # Korporation mit 5 Tag-Alternativen; Wert stark spielabhaengig, Modul underworld inaktiv.
+    "Hecate Speditions":         "Underworld-Korporation, 5 Tag-Alternativen - Modul inaktiv",
+}
+# M-Wert je Einheit. Produktion = dauerhaft (BGG-Werte), stock = einmalig.
+# TS src/common/TileType.ts: CITY_TILES
+_CITY_TILE_TYPES = frozenset({2, 3, 20, 37, 43})
+_DYN_PROD_M  = {"megacredits": 5.0, "steel": 8.0, "titanium": 10.0,
+                "plants": 10.0, "energy": 7.0, "heat": 6.0}
+_DYN_STOCK_M = {"megacredits": 1.0, "steel": 2.0, "titanium": 3.0,
+                "plants": 2.0, "energy": 1.0, "heat": 1.0}
+
+
+def _dynamic_value(name: str, state: dict) -> float:
+    """M-Wert des dynamischen Effekts ('X pro Tag/Stadt/Kolonie'), zur LAUFZEIT berechnet."""
+    d = _DYNAMIC.get(name)
+    if not d:
+        return 0.0
+    me    = state.get("thisPlayer", {}) or {}
+    game  = state.get("game", {}) or {}
+    stats = _player_stats(state)
+    n = 0
+
+    if d.get("tags"):
+        if d.get("others"):
+            n = sum(sum((p.get("tags", {}) or {}).get(t, 0) for t in d["tags"])
+                    for p in (state.get("players") or [])
+                    if p.get("color") != me.get("color"))
+        elif d.get("all"):
+            n = sum(sum((p.get("tags", {}) or {}).get(t, 0) for t in d["tags"])
+                    for p in (state.get("players") or []))
+        else:
+            n = sum((stats.get("tags", {}) or {}).get(t, 0) for t in d["tags"])
+            # "including this": traegt die Karte selbst einen der Tags, zaehlt sie mit
+            _own = [t.lower() for t in (card_info(name) or {}).get("tags", [])]
+            if any(t in _own for t in d["tags"]):
+                n += 1
+    elif d.get("cities"):
+        # ALLE Staedte im Spiel (nicht nur eigene) - ggf. auf/ausserhalb Mars gefiltert
+        where = d.get("where")
+        n = 0
+        for s in (game.get("spaces") or []):
+            # Die Player-View hat ein FLACHES Schema (tileType/color) - kein `tile`-Unterdict.
+            # Und 1 ist OCEAN, nicht City: CITY_TILES = {CITY 2, CAPITAL 3, OCEAN_CITY 20,
+            # RED_CITY 37, NEW_HOLLAND 43} (src/common/TileType.ts).
+            if s.get("tileType") not in _CITY_TILE_TYPES:
+                continue
+            offmars = s.get("spaceType") == "colony"
+            if where == "onmars" and offmars:
+                continue
+            if where == "offmars" and not offmars:
+                continue
+            n += 1
+    elif d.get("colonies"):
+        n = stats.get("colonies", 0)
+
+    per = d.get("per", 1)
+    units = n // per
+    if units <= 0:
+        return 0.0
+
+    if d["what"] == "stock":
+        return units * _DYN_STOCK_M.get(d["res"], 1.0)
+
+    # Dauerhafte Produktion: durch dieselbe KONTEXTUELLE Bewertung wie jede andere Produktion
+    # (horizont- und senkenbewusst: eine Ressource zaehlt nur, solange sie bis zum
+    # prognostizierten Spielende real genutzt werden kann). Vorher: BGG-Pauschale.
+    game  = state.get("game", {}) or {}
+    r_eff, gtt = _remaining_gens(game)
+    _corp = state.get("pickedCorporationCard", []) or []
+    plant_threshold = 7 if any(c.get("name") == "Ecoline" for c in _corp) else 8
+    return _contextual_prod_value({d["res"]: units}, me, game.get("oxygenLevel", 0),
+                                  r_eff, gtt, plant_threshold,
+                                  game.get("temperature", -30))
+
+
+# ── PLATZIERUNGS-ABHAENGIGE PRODUKTION (Mining Area / Mining Rights) ───────────────────────
+# TS: MiningCard.ts - Tile auf ein Feld mit Stahl- ODER Titan-Bonus; die Produktion dieser
+# Ressource steigt um 1. card_db kann das NICHT statisch halten (welche Ressource, haengt vom
+# Brett ab) -> Laufzeit, genau wie _DYNAMIC. Die Karten standen als Stub in card_db (score 0).
+# Mining Area verlangt zusaetzlich ein angrenzendes EIGENES Tile (kein Ozean).
+_MINING_CARDS = {
+    "Mining Area":        {"adjacent_own": True},
+    "Mining Area:ares":   {"adjacent_own": True},
+    "Mining Rights":      {"adjacent_own": False},
+    "Mining Rights:ares": {"adjacent_own": False},
+}
+# SpaceBonus-Enum (src/common/boards/SpaceBonus.ts)
+SB_TITANIUM, SB_STEEL, SB_PLANT, SB_DRAW, SB_HEAT, SB_OCEAN, SB_MC = 0, 1, 2, 3, 4, 5, 6
+# M-Wert der EINMALIGEN Platzierungsboni eines Feldes (Bestand, nicht Produktion).
+_SPACE_BONUS_M = {SB_TITANIUM: 3.0, SB_STEEL: 2.0, SB_PLANT: 2.0,
+                  SB_DRAW: 4.5, SB_HEAT: 1.0, SB_MC: 1.0}
+
+
+def _free_land_spaces(game: dict) -> list[dict]:
+    return [s for s in (game.get("spaces") or [])
+            if s.get("spaceType") == "land" and s.get("tileType") is None]
+
+
+def _mining_prod_value(name: str, state: dict) -> float:
+    """M-Wert von Mining Area / Mining Rights: bestes erreichbares Feld mit Stahl-/Titan-Bonus.
+    Wert = kontextuelle Produktion (+1 Schritt der Feld-Ressource) + Platzierungsboni des Feldes.
+    Kein gueltiges Feld -> 0 (der Server bietet die Karte dann ohnehin nicht an)."""
+    cfg = _MINING_CARDS.get(name)
+    if not cfg:
+        return 0.0
+    game   = state.get("game", {}) or {}
+    me     = state.get("thisPlayer", {}) or {}
+    spaces = game.get("spaces") or []
+    if not spaces:
+        return 0.0
+
+    space_map = {s["id"]: s for s in spaces}
+    adjacency = board_adjacency(space_map) if cfg["adjacent_own"] else {}
+    my_color  = me.get("color")
+
+    r_eff, gtt = _remaining_gens(game)
+    _corp = state.get("pickedCorporationCard", []) or []
+    plant_threshold = 7 if any(c.get("name") == "Ecoline" for c in _corp) else 8
+    oxygen = game.get("oxygenLevel", 0)
+    temp   = game.get("temperature", -30)
+
+    best = 0.0
+    for s in _free_land_spaces(game):
+        bonus = s.get("bonus") or []
+        if SB_TITANIUM not in bonus and SB_STEEL not in bonus:
+            continue
+        if cfg["adjacent_own"]:
+            # TS: angrenzend an ein EIGENES Tile, das kein Ozean ist
+            own_adj = any(t is not None and t != TILE_OCEAN and c == my_color
+                          for t, c in _neighbor_tiles(s["id"], space_map, adjacency))
+            if not own_adj:
+                continue
+        # Liegen beide Boni an, waehlt der Spieler -> Titan (3 M/Einheit vs. 2)
+        res = "titanium" if SB_TITANIUM in bonus else "steel"
+        v  = _contextual_prod_value({res: 1}, me, oxygen, r_eff, gtt, plant_threshold, temp)
+        v += sum(_SPACE_BONUS_M.get(b, 1.0) for b in bonus)   # Platzierungsboni des Feldes
+        best = max(best, v)
+    return best
+
+
+# ── PRODUKTIONS-KOPIE (Robotic Workforce) ──────────────────────────────────────────────────
+# TS: RoboticWorkforceBase - kopiert die Produktionsbox EINER eigenen Building-Karte.
+# Wert = beste kopierbare Box, kontextuell bewertet. Boxen mit negativen Anteilen, die der
+# Bot nicht decken kann, sind nicht kopierbar (TS: getPlayableBuildingCards).
+_COPY_PROD_CARDS = {"Robotic Workforce"}
+_PROD_FIELD = {"megacredits": "megacreditProduction", "steel": "steelProduction",
+               "titanium": "titaniumProduction", "plants": "plantProduction",
+               "energy": "energyProduction", "heat": "heatProduction"}
+
+
+def _copy_prod_value(name: str, state: dict) -> float:
+    if name not in _COPY_PROD_CARDS:
+        return 0.0
+    me   = state.get("thisPlayer", {}) or {}
+    game = state.get("game", {}) or {}
+    r_eff, gtt = _remaining_gens(game)
+    _corp = state.get("pickedCorporationCard", []) or []
+    plant_threshold = 7 if any(c.get("name") == "Ecoline" for c in _corp) else 8
+    oxygen = game.get("oxygenLevel", 0)
+    temp   = game.get("temperature", -30)
+
+    # TS: isCardApplicable - Events sind ausgeschlossen (ausser mit Odyssey), WILD zaehlt als Building.
+    tableau = me.get("tableau") or []
+    has_odyssey = any(c.get("name") == "Odyssey" for c in tableau)
+
+    best = 0.0
+    for c in tableau:
+        ci = card_info(c.get("name", ""))
+        if not ci:
+            continue
+        if (ci.get("type") or "").upper() == "EVENT" and not has_odyssey:
+            continue
+        tags = [str(t).upper() for t in (ci.get("tags") or [])]
+        if "BUILDING" not in tags and "WILD" not in tags:
+            continue
+        prod = ci.get("production") or {}
+        if not prod:
+            continue
+        # negative Anteile muessen gedeckt sein (M€-Prod darf bis -5)
+        ok = True
+        for res, delta in prod.items():
+            if delta < 0:
+                have  = me.get(_PROD_FIELD.get(res, ""), 0)
+                floor = -5 if res == "megacredits" else 0
+                if have + delta < floor:
+                    ok = False
+                    break
+        if not ok:
+            continue
+        best = max(best, _contextual_prod_value(prod, me, oxygen, r_eff, gtt,
+                                                plant_threshold, temp))
+    return best
+
+
+# ── TRIGGER-EFFEKTE auf Stadt-Platzierungen ────────────────────────────────────────────────
+# "When a city tile is placed, ..." - der Wert haengt davon ab, wie viele Staedte NOCH KOMMEN.
+# Stadt-Rate aus den echten Partie-Logs gemessen (2 Spieler): 0.12 / 0.27 / 0.29 Staedte pro
+# Generation, im Mittel ~0.25. (Diese Logs sind Bot-Partien - der Bot baut eher wenige
+# Staedte, die Rate ist also konservativ.) Justierbar:
+VP_VALUE = 5.0            # 1 VP = 5 M (Bot-Konvention)
+
+# ── TR-HORIZONT ────────────────────────────────────────────────────────────────────────────
+# card_db bewertet JEDEN TR-Schritt flach mit 10 M (BGG-Mittelwert) - horizontBLIND. Waehrend
+# Produktion laengst horizontbewusst bewertet wird (_contextual_prod_value), blieb TR statisch.
+# Wahrer Wert eines TR-Schritts:  1 VP am Spielende  +  1 M Einkommen je verbleibender
+# Produktionsphase.  Frueh (r_eff ~11) also ~15 M, in der letzten Generation nur ~5-6 M.
+# Der Bot unterbewertete frueh gebautes TR also um ~40 % und ueberbewertete spaetes um ~40 %.
+# Gilt NUR fuer die Kartenbewertung; score_action (Hitze->Temp, Ozean-SP ...) bleibt bewusst
+# bei 10 M - dort ist das Verhalten laut Log bereits richtig (SPs spaet), und beides zugleich
+# zu aendern macht die A/B-Marge nicht mehr attribuierbar.
+# Robust gegen den r_eff-Fehler: TR UND Produktion skalieren mit demselben Horizont, das
+# VERHAELTNIS ist daher stabil (r_eff=16 -> 1.33, r_eff=12.5 -> 1.43; heute: 10/15 = 0.67).
+# Ist r_eff zu lang, unterschaetzt der Hebel TR sogar leicht -> Fehler in die sichere Richtung.
+# Und er DEFLATIONIERT nichts: er erhoeht nur die Scores TR-tragender Karten -> der
+# Schwellen-Kollaps aus dem Horizont-A/B kann durch ihn nicht ausgeloest werden.
+LEVER_TR_HORIZON = True
+TR_BGG_M = 10.0          # flacher Satz in card_db (score_breakdown: tr / global_* / ocean / greenery)
+
+
+def _tr_value(r_eff: float) -> float:
+    """M-Wert EINES TR-Schritts, horizontabhaengig. Konsistent mit _contextual_prod_value:
+    M-Einkommen zaehlt ueber den vollen Horizont minus letzte Generation (dort nur Tiebreaker)."""
+    return VP_VALUE + 1.0 * max(0.0, r_eff - 1.0)
+
+
+def _tr_bgg_in_card(info: dict) -> float:
+    """M-Anteil des score_total, der aus TR-SCHRITTEN stammt (zum flachen card_db-Satz).
+    NICHT enthalten: Platzierungsboni (ocean = 14 -> 10 TR + 4 Nachbarschaft; greenery-Bonus)
+    und VP - die sind horizont-UNabhaengig und bleiben unangetastet."""
+    bd  = info.get("score_breakdown") or {}
+    tr  = float(bd.get("tr", 0.0))
+    tr += float(bd.get("global_temperature", 0.0))
+    tr += float(bd.get("global_oxygen", 0.0))
+    tr += float(bd.get("global_venus", 0.0))               # Satz 8 (Venus-Abschlag) - skaliert mit
+    tr += TR_BGG_M * float(info.get("oceans", 0) or 0)     # je Ozean 1 TR
+    tr += TR_BGG_M * float(info.get("greenery", 0) or 0)   # je Greenery 1 O2-Schritt
+    return tr
+CITY_RATE_PER_GEN = 0.25
+_CITY_TRIGGER = {
+    # M-Wert je zukuenftiger Stadt
+    "Immigrant City":    {"prod": {"megacredits": 1}},   # +1 M€-PRODUKTION je Stadt (dauerhaft!)
+    "Rover Construction": {"mc": 2},                     # +2 M€ je Stadt (einmalig)
+    "Pets":              {"vp_per": 2},                  # +1 Tier je Stadt -> 1 VP je 2 Tiere
+}
+
+
+def _city_trigger_value(name: str, state: dict) -> float:
+    """Wert eines 'bei jeder Stadt'-Triggers: erwartete ZUKUENFTIGE Staedte x Wert.
+    Die eigene Stadt (Immigrant City legt selbst eine) zaehlt mit."""
+    trg = _CITY_TRIGGER.get(name)
+    if not trg:
+        return 0.0
+    game  = state.get("game", {}) or {}
+    r_eff, _gtt = _remaining_gens(game)
+    # Erwartete Staedte bis Spielende (alle Spieler) + die Stadt, die die Karte selbst legt
+    exp_cities = r_eff * CITY_RATE_PER_GEN
+    if name == "Immigrant City":
+        exp_cities += 1.0                     # legt selbst eine Stadt ("including this")
+    if exp_cities <= 0:
+        return 0.0
+
+    if "prod" in trg:
+        # Dauerhafte Produktion, aber sie entsteht ERST mit der Zeit -> nur die halbe
+        # Restlaufzeit nutzbar (im Schnitt kommt die Stadt in der Mitte des Horizonts).
+        me = state.get("thisPlayer", {}) or {}
+        _corp = state.get("pickedCorporationCard", []) or []
+        plant_threshold = 7 if any(c.get("name") == "Ecoline" for c in _corp) else 8
+        val = 0.0
+        for res, per_city in trg["prod"].items():
+            steps = exp_cities * per_city
+            val += _contextual_prod_value({res: steps}, me, game.get("oxygenLevel", 0),
+                                          r_eff * 0.5, _gtt, plant_threshold,
+                                          game.get("temperature", -30))
+        return val
+    if "mc" in trg:
+        return exp_cities * trg["mc"]
+    if "vp_per" in trg:
+        return (exp_cities / trg["vp_per"]) * VP_VALUE
+    return 0.0
+
+
+# ── TAG-TRIGGER ("Whenever you play a X tag, ...") ─────────────────────────────────────────
+# 25 Karten, deren MOTOR das Spielen eigener Tag-Karten ist. card_db erfasst den Trigger NICHT
+# -> alle stark negativ bewertet (Decomposers -8, Martian Zoo -10, Venusian Animals -18,
+# Titan Manufacturing Colony -21, Earth Office -4) und praktisch nie gespielt.
+#
+# Erwartete Trigger = (Karten/Gen) x (Tag-Anteil im Deck) x Restgenerationen.
+# Beide Basiswerte GEMESSEN:
+#   Karten/Gen: aus den Partie-Logs (Bot 0.6-1.75, Mensch 2.4-2.9) -> konservativ 1.8
+#   Tag-Anteil: aus card_db (building .30, space .22, science .17, earth .13, power .11,
+#               venus .11, plant .11, microbe .07, city .07, jovian .06, animal .05)
+CARDS_PER_GEN = 1.8
+_TAG_SHARE = {"building": .30, "space": .22, "science": .17, "earth": .13, "power": .11,
+              "venus": .11, "plant": .11, "microbe": .07, "city": .07, "jovian": .06,
+              "animal": .05, "mars": .10, "moon": .02, "crime": .01}
+
+# gain: was EIN Trigger bringt.
+#   vp_per: N  -> die Ressource gibt 1 VP je N Stueck   |  mc: direkte M€
+#   res: Ressourcenwert in M (Pflanze 2, Hitze 1, ...)  |  saving: Kartenkosten-Rabatt
+_TAG_TRIGGER = {
+    # A) Ressourcen-Sammler (Ressource auf die eigene Karte -> VP)
+    "Decomposers":              {"tags": ["animal", "plant", "microbe"], "vp_per": 3},
+    "Martian Zoo":              {"tags": ["earth"],   "vp_per": 2},
+    "Venusian Animals":         {"tags": ["science"], "vp_per": 1},
+    "Carbon Nanosystems":       {"tags": ["science"], "vp_per": 2},
+    "Titan Manufacturing Colony": {"tags": ["jovian"], "res": 2.0},   # Werkzeug -> Floater-artig
+    "Space Privateers":         {"tags": ["crime"],   "res": 2.0},
+    "Terraforming Robots":      {"tags": ["mars"],    "res": 2.0},
+    "Stem Field Subsidies":     {"tags": ["science"], "res": 2.0},
+    "Collegium Copernicus":     {"tags": ["science"], "res": 2.0},
+    "Robin Haulings":           {"tags": ["venus"],   "res": 2.0},
+    "The Archaic Foundation Institute": {"tags": ["moon"], "res": 2.0},
+    # B) Kostensenker (Rabatt auf die naechste Karte mit dem Tag)
+    "Earth Office":             {"tags": ["earth"],  "saving": 3.0},
+    "Solar Logistics":          {"tags": ["earth"],  "saving": 2.0},
+    "Venus Waystation":         {"tags": ["venus"],  "saving": 2.0},
+    "Space Lanes":              {"tags": ["jovian", "earth", "venus"], "saving": 2.0},
+    "Terraforming Control Station": {"tags": ["venus", "mars"], "saving": 2.0},
+    # C) direkter Gewinn je Trigger
+    "Albedo Plants":            {"tags": ["plant"],  "res": 3.0},     # 3 Hitze ~ 3 M
+    "Viral Enhancers":          {"tags": ["plant", "microbe", "animal"], "res": 2.0},
+    "EcoTec":                   {"tags": ["plant", "microbe", "animal"], "res": 2.0},
+    "Ambient":                  {"tags": ["venus"],  "res": 3.0},
+    "Space Relay":              {"tags": ["jovian"], "res": 3.0},     # 1 Karte ziehen
+    "Mars University":          {"tags": ["science"], "res": 1.5},    # Handkarten-Tausch
+}
+
+
+def _tag_trigger_value(name: str, state: dict) -> float:
+    """Wert eines 'bei jeder Tag-Karte'-Triggers: erwartete kuenftige Trigger x Wert je Trigger."""
+    trg = _TAG_TRIGGER.get(name)
+    if not trg:
+        return 0.0
+    game = state.get("game", {}) or {}
+    r_eff, _ = _remaining_gens(game)
+    if r_eff <= 0:
+        return 0.0
+    # Wahrscheinlichkeit, dass eine gespielte Karte einen der Trigger-Tags traegt
+    p = min(0.9, sum(_TAG_SHARE.get(t, 0.05) for t in trg["tags"]))
+    triggers = CARDS_PER_GEN * p * r_eff + 1.0     # +1: "including this" (die Karte selbst)
+    if triggers <= 0:
+        return 0.0
+
+    if "vp_per" in trg:
+        return (triggers / trg["vp_per"]) * VP_VALUE
+    if "saving" in trg:
+        return triggers * trg["saving"]
+    return triggers * trg.get("res", 1.0)
+
+
+def _attack_value(name: str, state: dict) -> float:
+    """M-Wert des Angriffs - GEDECKELT durch das, was der GEGNER tatsaechlich besitzt.
+    (Deimos Down entfernt 8 Pflanzen; hat der Gegner nur 2, zaehlen auch nur 2 = 4 M.)
+
+    WICHTIG - die beiden Angriffsarten verhalten sich UNTERSCHIEDLICH (TS verifiziert):
+      * PFLANZEN (RemoveAnyPlants): es gibt eine 'Skip removing plants'-Option -> der Bot muss
+        NIE eigene Pflanzen zerstoeren. Hat der Gegner keine, ist der Wert einfach 0.
+      * PRODUKTION (DecreaseAnyProduction): es gibt KEINE Skip-Option. Ist der Bot das EINZIGE
+        gueltige Ziel, MUSS er sich selbst treffen -> dann ist der 'Angriff' ein SCHADEN und
+        muss NEGATIV zaehlen (beobachtet: 'Bot stole 2 M€ production from Bot').
+        Kann niemand getroffen werden (auch der Bot nicht), passiert nichts -> 0.
+    """
+    atk = _ATTACK.get(name)
+    if not atk:
+        return 0.0
+    me   = state.get("thisPlayer", {}) or {}
+    opps = [p for p in (state.get("players") or [])
+            if p.get("color") != me.get("color")]
+
+    val = 0.0
+    # ── Pflanzen: nur Bonus, nie Selbstschaden (Skip-Option) ──
+    if "plants" in atk and opps:
+        best = max((p.get("plants", 0) or 0) for p in opps)
+        val += min(atk["plants"], best) * ATTACK_PLANT_VALUE
+
+    # ── Produktion: Bonus beim Gegner ODER Zwangsschaden bei sich selbst ──
+    _FIELD = {"megacredits": "megacreditProduction", "steel": "steelProduction",
+              "titanium": "titaniumProduction", "plants": "plantProduction",
+              "energy": "energyProduction", "heat": "heatProduction"}
+    for res, cnt in (atk.get("prod") or {}).items():
+        field = _FIELD.get(res, res)
+        floor = -5 if res == "megacredits" else 0      # M€-Prod darf bis -5
+        opp_room = max(((p.get(field, 0) or 0) - floor for p in opps), default=0)
+        if opp_room > 0:
+            val += min(cnt, opp_room) * ATTACK_PROD_VALUE          # Gegner treffbar -> Bonus
+        else:
+            # Gegner NICHT treffbar. Ist der Bot selbst ein gueltiges Ziel, muss er sich
+            # selbst senken -> voller Schaden. Sonst verpufft der Effekt (0).
+            own_room = max(0, (me.get(field, 0) or 0) - floor)
+            val -= min(cnt, own_room) * ATTACK_PROD_VALUE
+    return val
+
+
 def score_card(card: dict, state: dict) -> float:
     """
     Hybrid: max(ML-Score, regelbasierter Score).
@@ -517,6 +1461,36 @@ def score_card(card: dict, state: dict) -> float:
 
 
 PROD_CAP = 6.0   # gedeckelter Produktions-Ernte-Horizont (Grenzertrag, ~BGG-Horizont)
+
+# ── M€-PRODUKTION: DER EINZIGE UNGEDECKELTE HORIZONT ────────────────────────────────────────
+# Gemessen (4 Partien gegen apehead): Der Bot faehrt HOEHERE M€-Produktion als apehead und
+# spielt trotzdem halb so viele Karten (22-25 vs 29-48). apehead laeuft in game_002 acht
+# Generationen mit 0 bis -2 M€-Produktion und kauft stattdessen KARTEN -- bei praktisch
+# gleichem Einkommen und gleichem Gesamtausgaben-Volumen (424 vs 460 M€).
+# Ursache: M€-Produktion ist die EINZIGE Ressource ohne Horizont-Deckel. Bei r_eff = 16 (das
+# klebt am Klemmwert, s. LEVER_HORIZON_LEN_CAP) ist 1 M€-Produktionsschritt 15 M€ wert --
+# mehr als Stahl (10), fast so viel wie Titan (15). In Wirklichkeit ist 1 Stahl 2 M€ und
+# 1 Titan 3 M€ wert; ein M€-Schritt ist per Definition der SCHWAECHSTE.
+# WICHTIG -- was dieser Deckel IST und was nicht: Die Docstring von _contextual_prod_value
+# begruendet den fehlenden Deckel mit "M€ ist universelle Waehrung, immer ausgebbar". Das
+# stimmt -- der Deckel hier ist KEIN Senken-Argument, sondern ein HORIZONT-PROXY: r_eff ist
+# kaputt (16 statt ~12,5), und weil die globale Reparatur die ganze Score-Skala mitreisst
+# (A/B: -12.06 VP), korrigieren wir hier nur die Ressource, bei der der Fehler am teuersten
+# ist. Das ist ein stumpfes Werkzeug: es korrigiert den MITTELWERT, nicht die Kurve
+# (M€-Prod ist damit flach 7 statt 15; wahr waere 11,5 in Gen 1 und 1,5 in Gen 12).
+#
+# ═══ VERWORFEN (A/B 13.07.: -2.02 VP [95%-CI -2.97 .. -1.08], n=280 Paare) ══════════════════
+# Der Deckel griff mechanisch (Prod-Summe 23.2 vs 27.6) -- aber der Bot steckte das frei
+# gewordene Geld NICHT in Karten: Karten/Gen 1.2 vs 1.3 (GEFALLEN), SP-Ausgaben unveraendert
+# (176 vs 173). Er wurde nur aermer.
+# WIDERLEGT damit: "Der Bot kauft die Maschine statt zu spielen; nimm ihm den Anreiz, und er
+# spielt." Die Kartenzahl des Bots ist NICHT budgetbegrenzt -- der Engpass liegt woanders.
+# Offen: apehead spielt ~3,3 Karten/Gen, der Bot ~1,2 -- bei gleichem Einkommen und gleichem
+# Gesamtausgaben-Volumen. Naechster Verdacht: die KAUF-Seite (choose_cards_to_buy /
+# BUY_MIN_SCORE / MC_RESERVE), nicht die Spiel-Seite. Erst messen (s. Telemetrie).
+# ════════════════════════════════════════════════════════════════════════════════════════════
+LEVER_MC_PROD_CAP = False
+MC_PROD_CAP = 8.0   # -> 1 M€-Prod = 7 M€ (Verhaeltnis zu Stahl 0.70; BGG-Verhaeltnis: 0.63)
 # Hitze/Energie sind NICHT baukarten-limitiert wie Stahl/Titan (Ueberschuss-Energie
 # wird automatisch zu Hitze, Hitze zu Temperatur). Daher eigener, hoeherer Horizont
 # statt PROD_CAP=6: der realistische Anteil am ~19-stufigen Temperatur-Track in 2P.
@@ -568,10 +1542,48 @@ def _param_rate(game: dict, param: str) -> float:
     return blended
 
 
+# ── LAENGEN-DECKEL FUER DEN HORIZONT ───────────────────────────────────────────────────────
+# Die reine Parameter-Extrapolation ist als Horizontschaetzer unbrauchbar: gemessen an 4 echten
+# Partien (Laengen 13/13/12/12) ueberschaetzte sie die Restgenerationen im MEDIAN um +6 und
+# klebte von Gen 1 bis Gen ~11 am Deckel von 16.
+# Ursache: OZEANE. Sie werden ausschliesslich per Karteneffekt gelegt und kommen in Schueben
+# am Spielende (gemessen: 10 Generationen Stillstand bei 1-3, dann 1->9 in zwei Generationen).
+# Waerme und Sauerstoff terraformen sich dagegen teilweise "von selbst" (Energie->Waerme->Temp,
+# Pflanzen->Greenery->O2). Eine lineare Ratenextrapolation auf eine klumpige Groesse ergibt
+# "noch 56 Generationen" -> max(...) zieht r_eff an den Deckel.
+# Folge (das ist der Kern des Engine-Problems): r_eff multipliziert die GESAMTE Produktions-
+# bewertung. Bei r_eff = 16 ist 1 M€-Produktion 15 M wert (wahr: ~8), waehrend TR flach mit 10
+# bewertet wird -> der Bot bepreist M€-Produktion gegenueber TR um Faktor ~2,3 zu hoch. Genau
+# das zeigen die Logs: hoechste M€-Produktion, niedrigstes TR.
+# Fix: Deckel aus der beobachteten Spiellaenge. Er kann nur VERKUERZEN, nie verlaengern ->
+# in 6P (schnellere Parameter) faellt die Schaetzung von selbst darunter, der Deckel greift
+# nicht, die Spielerzahl-Agnostik bleibt erhalten.
+# Gemessen (4 Partien vs. apehead, 50 Datenpunkte): Bias +6.12 -> -0.02, MAE 6.12 -> 0.46.
+#
+# ═══ VERWORFEN (A/B 13.07.: -12.06 VP [95%-CI -15.05 .. -9.06], n=35 Paare) ═════════════════
+# ZWEI Gruende, beide grundsaetzlich:
+#  1) FALSCHE FORM. Eine feste Spiellaenge kodiert die Geschwindigkeit des GEGNERS. Gegen
+#     apehead endet die Partie nach 12,5 Generationen, WEIL er terraformt; Bot gegen Bot
+#     dauert sie 16,2 (im A/B gemessen), WEIL beide langsam sind. Jede Konstante ist in einer
+#     der beiden Welten falsch. Ein Prior aus 4 Partien gegen EINEN Gegner taugt nicht.
+#  2) SKALEN-KOPPLUNG. r_eff deflationiert JEDEN Kartenscore um ~30 %. PASS_SCORE,
+#     BUY_MIN_SCORE, CARD_PLAY_SCALE und die SP-Werte in score_action sind aber gegen die
+#     alte Skala kalibriert -> Karten rutschen unter die Schwellen. Telemetrie: Karten/Gen
+#     0.7 vs 1.2, Prod-Summe 16 vs 32, M€ in SPs 336 vs 258. TR blieb UNVERAENDERT (23.0 vs
+#     22.8) - der Hebel hat nicht einmal erreicht, wofuer er gedacht war.
+# Der Befund selbst bleibt gueltig: r_eff ueberschaetzt und klebt am Deckel. Aber die
+# Reparatur erzwingt eine Neukalibrierung der GESAMTEN Score-Skala - das ist kein Hebel,
+# das ist ein eigenes Projekt. Code bleibt stehen, Flag ist AUS.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+LEVER_HORIZON_LEN_CAP = False
+GAME_LEN_PRIOR = 12.5    # typische Partielaenge in Generationen (gemessen: 13/13/12/12)
+
+
 def _remaining_gens(game: dict) -> tuple[float, float]:
     """Prognostiziert Restgenerationen aus dem Parameter-Stand statt fixer 14.
     Das Spiel endet, wenn der LANGSAMSTE Parameter sein Maximum erreicht -> max(...).
     Rate via _param_rate (selbst-kalibrierend, spielerzahl-agnostisch).
+    Zusaetzlich gedeckelt durch die typische Spiellaenge (s. LEVER_HORIZON_LEN_CAP).
     Rueckgabe (R_eff, Gen_bis_Temp_max)."""
     temp   = game.get("temperature", -30)
     oxygen = game.get("oxygenLevel", 0)
@@ -580,6 +1592,10 @@ def _remaining_gens(game: dict) -> tuple[float, float]:
     gto2 = max(0.0, (14 - oxygen) / _param_rate(game, "oxygen"))
     gtoc = max(0.0, (9  - oceans) / _param_rate(game, "oceans"))
     r_eff = min(16.0, max(1.0, max(gtt, gto2, gtoc)))
+    if LEVER_HORIZON_LEN_CAP:
+        len_cap = max(1.0, GAME_LEN_PRIOR - game.get("generation", 1) + 1)
+        r_eff = min(r_eff, len_cap)
+        gtt   = min(gtt, len_cap)      # Hitze-Horizont darf das Spielende nicht ueberdauern
     return r_eff, gtt
 
 
@@ -624,6 +1640,8 @@ def _contextual_prod_value(prod: dict, player: dict, oxygen: int,
     (Temperaturleiste) und bleiben ueber gtt + Kappe begrenzt."""
     eff = min(r_eff, PROD_CAP)
     full_gens   = max(0.0, r_eff - 1.0)          # M€: voller Horizont (immer ausgebbar)
+    mc_gens     = (max(0.0, min(r_eff, MC_PROD_CAP) - 1.0)   # M€: Horizont-Proxy (s.o.)
+                   if LEVER_MC_PROD_CAP else full_gens)
     capped_gens = max(0.0, eff - 1.0)            # Stahl/Titan: gekappt (Baukarten-limitiert)
     # Hitze/Energie: gtt (Generationen bis Temp-Max) kommt aus der BEOBACHTETEN Rate,
     # die den Gegner enthaelt. Rennt ein starker Gegner die Temperatur hoch, kollabiert
@@ -644,7 +1662,22 @@ def _contextual_prod_value(prod: dict, player: dict, oxygen: int,
     steel_v = player.get("steelValue", 2) or 2
     titan_v = player.get("titaniumValue", 3) or 3
 
-    v  = prod.get("megacredits", 0) * 1.0     * full_gens
+    # LEVER_MC_SCARCITY (19.07.): Die ERSTE M-Produktion ist existenziell, die
+    # sechzehnte fast belanglos - bis hierher war die Bewertung ueber den ganzen
+    # Bereich KONSTANT (Marketing Experts 45.0, egal ob eigene MC-Prod 0 oder 16).
+    # Gemessen an drei Live-Partien: in der Siegpartie hatte der Bot ab Gen 3 fuenf
+    # MC-Produktion, in beiden Verlustpartien bis Gen 6 NULL - bei fast gleicher
+    # Kartenzahl im Tableau. Er baute dort Mikroben-Engines (Decomposers 59.2 wird
+    # hoeher bewertet als Marketing Experts 45.0), also Ressourcen AUF KARTEN, von
+    # denen man nichts kaufen kann. Der Faktor greift NUR auf den M-Anteil einer
+    # Karte, nicht auf die ganze Karte - sonst wuerden VP- und TR-Anteile mitskaliert.
+    _mc_scarcity = 1.0
+    if LEVER_MC_SCARCITY:
+        _mc_now = player.get("megacreditProduction", 0) or 0
+        if _mc_now < MC_SCARCITY_FLOOR:
+            _mc_scarcity = 1.0 + MC_SCARCITY_BONUS * (
+                (MC_SCARCITY_FLOOR - _mc_now) / MC_SCARCITY_FLOOR)
+    v  = prod.get("megacredits", 0) * 1.0     * mc_gens * _mc_scarcity
     v += prod.get("steel", 0)       * steel_v * capped_gens
     v += prod.get("titanium", 0)    * titan_v * capped_gens
     v += prod.get("heat", 0)        * 1.25    * heat_gens      # 1/8 TR * 10M
@@ -653,7 +1686,7 @@ def _contextual_prod_value(prod: dict, player: dict, oxygen: int,
     dplant = prod.get("plants", 0)
     if dplant:
         cur_plants = player.get("plants", 0)
-        plant_prod_total = (player.get("production", {}) or {}).get("plants", 0) + dplant
+        plant_prod_total = player_production(player).get("plants", 0) + dplant
         reach = r_eff + 1.0                        # echter Horizont + finale Runde
         projected = cur_plants + plant_prod_total * reach
         greenery = 5.0 + (10.0 if oxygen < 14 else 0.0)   # 1 VP + ggf. 1 O2-TR
@@ -728,12 +1761,57 @@ def _score_card_rules(card: dict, state: dict) -> float:
     new_prod = _contextual_prod_value(prod, player, oxygen, r_eff, gtt, plant_threshold, temp)
     score += new_prod - static_prod_bgg
 
+    # TR-HORIZONT: denselben Schritt wie oben fuer die Produktion, jetzt fuer TR. card_db
+    # rechnet flach 10 M/Schritt; der wahre Wert haengt am Restspiel (s. _tr_value).
+    if LEVER_TR_HORIZON:
+        _tr_bgg = _tr_bgg_in_card(info)
+        if _tr_bgg:
+            score += _tr_bgg * (_tr_value(r_eff) / TR_BGG_M - 1.0)
+
     # Aktions-/Effektkarten (type ACTIVE): wiederholbare Aktion ueber die
     # Restlaufzeit bewerten statt pauschal +8. action_once = Netto-M pro
     # Aktivierung (BGG, aus card_db). Konservative Aktivierungsrate als
     # Tote-Kaeufe-Waechter (s. ACTION_ACTIVATION_RATE).
     if (info.get("type") or "").upper() == "ACTIVE":
         action_once = float(info.get("action_once", 0) or 0)
+        # Der KARTENZUG der Aktion fehlte hier komplett -- im Wert UND im Gate darunter.
+        # Folge: Inventors' Guild (action_once = 0.0) und Mining Market Insider (-12.5)
+        # fielen durchs Gate und wurden nie bewertet; Business Network / Development Center /
+        # AI Central / Sub-Crust Measurements passierten das Gate, bekamen ihren Zug aber
+        # nicht gutgeschrieben. Genau die 6 Karten, die den Ziehkanal oeffnen (BOB ftl.:
+        # 1,30 gezogene Karten/Gen, der Bot: 0,62).
+        if LEVER_DRAW_VALUE:
+            action_once += DRAW_CARD_VALUE * float(info.get("action_draw", 0) or 0)
+        # ★ FIX 20.07. (apeheads Kartenbewertung): Der Kommentar oben behauptet,
+        # action_once sei bereits NETTO. Das stimmt nicht - kostet die Aktion etwas,
+        # steht das in einem SEPARATEN Feld `action_prod`, und das wurde bei der
+        # Kaufbewertung nie gelesen (nur bei der Ausfuehrung, Z. 3395/5276).
+        # Refugee Camps: Ertrag 5.00, Kosten -5.00 (eine M-Produktion) -> netto NULL.
+        # apeheads Urteil dazu: "sinnloser Muell". Der Bot bewertete die Karte mit 158.
+        # Betrifft zwei Karten (Refugee Camps, Equatorial Magnetizer -4.00 netto).
+        if LEVER_ACTION_COST:
+            action_once += float(info.get("action_prod", 0) or 0)
+        # ★ LEVER_RESOURCE_SYNERGY (20.07., apeheads Caveat): "Einzelne Floater-/
+        # Mikrobenkarten sind schwach, aber sobald man sie sammeln UND umverteilen
+        # kann, werden sie sehr stark und flexibel." Ein FESTER Einzelwert ist damit
+        # zwangslaeufig falsch - zu hoch, solange die Karte allein steht, zu niedrig,
+        # sobald mehrere zusammenkommen. Deshalb kontextabhaengig statt kuratiert:
+        # gezaehlt wird, wie viele Karten DERSELBEN Ressource schon im Tableau liegen.
+        # Allein stehend wird die Sammel-Aktion gedaempft, im Verbund voll gewertet.
+        # Greift NUR auf Karten mit eigenem Ressourcentyp (res_type aus dem Servercode,
+        # via patch_card_db_restype.py) - Karten mit direkter Auszahlung (Geld, TR,
+        # Kartenzug) sind nicht betroffen.
+        if LEVER_RESOURCE_SYNERGY and action_once > 0 and name in PURE_COLLECTORS:
+            _rt = info.get("res_type")
+            if _rt:
+                _eigene = 0
+                for _c in (state.get("thisPlayer", {}).get("tableau") or []):
+                    _ci = _action_card_info(_c.get("name") if isinstance(_c, dict) else _c)
+                    if _ci and _ci.get("res_type") == _rt:
+                        _eigene += 1
+                if _eigene < RES_SYNERGY_FLOOR:
+                    _fehlt = (RES_SYNERGY_FLOOR - _eigene) / RES_SYNERGY_FLOOR
+                    action_once *= (1.0 - RES_SYNERGY_DAMPING * _fehlt)
         if action_once > 0:
             # Aktivierungen ueber das Nach-Freischaltungs-Fenster: voraussetzungs-
             # gesperrte Engines (z.B. Penguins: 8 Ozeane) zaehlen nur Generationen
@@ -772,11 +1850,26 @@ def _score_card_rules(card: dict, state: dict) -> float:
             # Aktion nicht -> Aktionswert anteilig abwerten. OR-Aktionen ({}) sind
             # flexibel und gelten als befeuerbar.
             fuel = 1.0
-            prodp = player.get("production", {}) or {}
+            prodp = player_production(player)
+            _keeps_energy = any((c.get("name") == _ENERGY_KEEPER)
+                                for c in (player.get("tableau") or []))
             for res, amt in (info.get("action_input") or {}).items():
                 if not amt or amt <= 0:
                     continue
                 supply = prodp.get(res, player.get(res + "Production", 0))
+                if res == "energy" and not _keeps_energy:
+                    # Energie akkumuliert NICHT (s. ENERGY_RAMP_FUEL oben): entweder die
+                    # PRODUKTION allein deckt die Kosten -> jede Generation aktivierbar,
+                    # oder die Aktion laeuft nie an. Der aktuelle BESTAND reicht hoechstens
+                    # fuer genau EINE Aktivierung (diese Generation).
+                    if supply >= amt:
+                        f = 1.0
+                    else:
+                        f = ENERGY_RAMP_FUEL if (amt - supply) <= ENERGY_GAP_MAX else 0.0
+                        if player.get("energy", 0) >= amt:
+                            f = max(f, 1.0 / max(1.0, r_eff))
+                    fuel = min(fuel, f)
+                    continue
                 if res != "energy":   # Stahl/Titan/Pflanzen: Lager anteilig dazu
                     supply += player.get(res, 0) / max(1.0, tl)
                 fuel = min(fuel, supply / amt)
@@ -899,7 +1992,7 @@ def _score_card_rules(card: dict, state: dict) -> float:
             if n:
                 eng_names.add(n)
         if state.get("_feed_include_hand"):
-            for c in (player.get("cardsInHand") or []):
+            for c in (hand_cards(state) or []):
                 n = c.get("name") if isinstance(c, dict) else c
                 if n:
                     eng_names.add(n)
@@ -984,6 +2077,41 @@ def _score_card_rules(card: dict, state: dict) -> float:
         if _vp > 0 and cost <= player.get("megacredits", 0):
             score = max(score, _vp * VP_ENDGAME_VALUE)
 
+    # ANGRIFF auf den Gegner (Pflanzen zerstoeren / Produktion senken). Stand bisher in KEINER
+    # Bewertung -> 49 von 50 Angriffskarten waren zu negativ und wurden praktisch nie gespielt.
+    # Gedeckelt durch den TATSAECHLICHEN Gegner-Bestand (s. _attack_value).
+    score += _attack_value(card.get("name", ""), state)
+
+    # DYNAMISCHE EFFEKTE ("1 M€-Prod je Earth-Tag" usw.). card_db hat dort LEERE production/
+    # stock und nur einen Marker, den der Bot nicht auswertete -> er sah nur die Kosten
+    # (Cartel: -11). Wird jetzt zur Laufzeit aus Tags/Staedten/Kolonien berechnet.
+    score += _dynamic_value(card.get("name", ""), state)
+
+    # TRIGGER-EFFEKTE auf Stadt-Platzierungen (Immigrant City / Rover Construction / Pets):
+    # erwartete zukuenftige Staedte x Wert (Rate aus echten Logs: ~0.25 Staedte/Gen in 2P).
+    score += _city_trigger_value(card.get("name", ""), state)
+
+    # TAG-TRIGGER ("Whenever you play a X tag..."): erwartete kuenftige Trigger x Wert.
+    score += _tag_trigger_value(card.get("name", ""), state)
+
+    # PLATZIERUNGS-/KOPIER-PRODUKTION: Mining Area/Rights (Feld-Bonus bestimmt die Ressource)
+    # und Robotic Workforce (kopiert eine eigene Building-Produktionsbox). Standen als Stub in
+    # card_db (score_total 0, kein production-Feld) -> Bot sah weder Effekt NOCH Kosten.
+    score += _mining_prod_value(card.get("name", ""), state)
+    score += _copy_prod_value(card.get("name", ""), state)
+
+    # KACHEL-PLATZIERUNG: was bringt mir die Kachel, die diese Karte legt?
+    # (apeheads Befund 19.07. - bis dahin sah score_card davon NICHTS)
+    if LEVER_CARD_TILE_VALUE:
+        score += _card_tile_value(info, state)
+
+    # KARTENZIEHEN: card_db rechnet flach 1.0 M€ je gezogener Karte (s. LEVER_DRAW_VALUE).
+    # Delta auf den echten Wert -- analog zur Produktion, die auch ersetzt statt addiert wird.
+    if LEVER_DRAW_VALUE:
+        _dc = float(info.get("draw_cards", 0) or 0)
+        if _dc:
+            score += _dc * (DRAW_CARD_VALUE - DRAW_BGG_M)
+
     return score
 
 
@@ -992,6 +2120,10 @@ def _score_card_rules(card: dict, state: dict) -> float:
 # Temp -30..+8, O2 0..14, Ozeane 0..9)
 _PARAM_RATE = {"temperature": 2.7, "oxygen": 1.0, "oceans": 0.65, "venus": 1.0}
 REQ_UNREACHABLE = -50.0
+# Requirements, die sich im Spielverlauf VON SELBST erfuellen, duerfen nicht hart gesperrt
+# werden (sonst kauft der Bot die Karte nie). Malus statt Sperre - justierbar:
+REQ_TAG_MALUS  = 5.0   # je fehlendem Tag  (ab 5 fehlenden Tags: doch unerreichbar)
+REQ_PROD_MALUS = 6.0   # fehlende Produktions-Voraussetzung (baut man auf)
 
 
 def _tag_count(player: dict, tag: str) -> int:
@@ -1014,7 +2146,7 @@ def _strategy_demand(state: dict) -> dict:
         return cached
     player = state.get("thisPlayer", {})
     demand: dict = {}
-    owned = list(player.get("tableau") or player.get("playedCards") or []) + list(player.get("cardsInHand") or [])
+    owned = list(player.get("tableau") or player.get("playedCards") or []) + hand_cards(state)
     for c in owned:
         nm = c.get("name") if isinstance(c, dict) else c
         info = card_info(nm or "")
@@ -1047,14 +2179,25 @@ def _requirement_penalty(info: dict, state: dict, tl: int, skip_global: bool = F
     game   = state.get("game", {})
     pen    = 0.0
 
+    # TAG-Requirements (z.B. AI Central: 3 Science-Tags). TEMPORAER - Tags SAMMELT man im
+    # Spielverlauf! Eine harte Sperre (REQ_UNREACHABLE) vergiftete 71 Karten dauerhaft, auch
+    # beim KAUF -> der Bot kaufte sie nie, obwohl er die Tags in 2-3 Generationen haette.
+    # (Gleiche Fehlerklasse wie zuvor bei Party-/Produktions-/Global-Requirements.)
+    # Der Malus waechst mit der Luecke: 1 fehlender Tag ist fast egal, 5 fehlende sind fast
+    # unerreichbar. Der Server bietet unspielbare Karten ohnehin nicht zum Ausspielen an.
     for tag, need in (info.get("req_tags") or {}).items():
-        if _tag_count(player, tag) < need:
-            return REQ_UNREACHABLE
+        _gap = need - _tag_count(player, tag)
+        if _gap > 0:
+            if _gap >= 5:
+                return REQ_UNREACHABLE          # realistisch nicht mehr aufzuholen
+            pen -= REQ_TAG_MALUS * _gap
 
-    prod_own = player.get("production", {}) or {}
+    # Produktions-Requirements (Karte VERLANGT eine laufende Produktion). Ebenfalls temporaer:
+    # Produktion baut man auf. Malus statt Sperre.
+    prod_own = player_production(player)
     for res in (info.get("req_prod") or []):
         if prod_own.get(res, 0) <= 0:
-            return REQ_UNREACHABLE
+            pen -= REQ_PROD_MALUS
 
     # Implizite Produktions-Voraussetzung: eine Karte, die Produktion SENKT, verlangt genug
     # Produktion, um die Senkung zu absorbieren (so prueft es die echte Engine).
@@ -1150,7 +2293,7 @@ def score_card_to_buy(card: dict, state: dict, for_initial_keep: bool = False) -
     tl = turns_left(state)
     player = state["thisPlayer"]
     mc = player.get("megacredits", 0)
-    mc_prod = player.get("production", {}).get("megacredits", 0)
+    mc_prod = player_production(player).get("megacredits", 0)
     cost = card.get("calculatedCost", 0)
 
     # Voraussetzungen: beim Keep nur globale Parameter ueberspringen (steigen ohnehin),
@@ -1335,8 +2478,25 @@ def choose_cards_to_buy(cards: list[dict], state: dict, card_cost: int = 3) -> l
     mc      = player.get("megacredits", 0)
     tl      = turns_left(state)
 
-    # Spätes Spiel: weniger Karten kaufen
-    if tl <= 2:
+    # EXTREM-LEVER: alle Karten kaufen, die das Budget hergibt, egal welcher Score,
+    # ohne Spaetphasen-Stopp. Nur fuer den Kausalitaetstest (s. LEVER_BUY_ALL oben).
+    if LEVER_BUY_ALL:
+        reserve = MC_RESERVE
+        budget  = max(0, mc - reserve)
+        # sortiere nach Score (beste zuerst), kaufe so viele wie das Budget zulaesst
+        # Beim KAUFEN zahlt man die KAUFGEBUEHR (card_cost, ~3 M€/Karte), NICHT den
+        # vollen calculatedCost - der faellt erst beim AUSSPIELEN an. (Frueherer Fehler:
+        # mit calculatedCost budgetiert -> eine teure Karte blockierte die anderen.)
+        _scored = sorted(((score_card_to_buy(c, state), c["name"])
+                          for c in cards), reverse=True)
+        _n_afford = int(budget // card_cost) if card_cost > 0 else len(_scored)
+        return [_nm for _sc, _nm in _scored[:_n_afford]]
+
+    # Spätes Spiel: weniger Karten kaufen. LEVER_BUY_VS_PASS haelt dieses harte
+    # Verbot NICHT ein - es kauft spaet weiter, aber nur netto-positive Karten (s.u.).
+    if tl <= 2 and not LEVER_BUY_VS_PASS:
+        if _TELEM:                                  # Angebot zaehlen, Kauf = 0 (Diagnose)
+            _telem_note("offer", len(cards), state.get("id"))
         return []  # Gen 13-14: keine neuen Karten mehr
 
     # Schätze beste Kartenkosten aus den angebotenen Karten
@@ -1372,9 +2532,14 @@ def choose_cards_to_buy(cards: list[dict], state: dict, card_cost: int = 3) -> l
     # Spielgeld-Reserve fuer die BILLIGSTE lohnende Karte (nicht fuer die teuerste ANGEBOTENE -
     # das war der Bug: eine teure Karte im Paeckchen blockierte den ganzen Kauf).
     play_reserve = min(cost for _, _, cost in worth)
+    if LEVER_BUY_OPTIONALITY:
+        play_reserve *= BUY_PLAY_RESERVE_FRAC     # s.o.: Kauf = Optionalitaet, kein Sofortspiel
     reserve = MC_RESERVE + play_reserve
     budget  = max(0, mc - reserve)
-    max_buy = min(budget // card_cost, 3)
+    # FRUEHER: max_buy = min(budget // card_cost, 3) -- ein hartkodierter Deckel von 3 Kaeufen
+    # pro Kaufphase. Sachlich falsch (es gibt keine solche Regel) und im Draft schaedlich, wo
+    # deutlich mehr lohnende Karten durchgereicht werden. Grenze ist jetzt nur das Budget.
+    max_buy = int(budget // card_cost)
 
     if max_buy == 0:
         return []
@@ -1393,6 +2558,10 @@ def choose_cards_to_buy(cards: list[dict], state: dict, card_cost: int = 3) -> l
 
     if chosen:
         log.info("  📦 Kaufe: %s", ", ".join(chosen))
+    if _TELEM:
+        _pid = state.get("id")
+        _telem_note("offer", len(cards), _pid)
+        _telem_note("buy",   len(chosen), _pid)
     return chosen
 
 
@@ -1561,6 +2730,17 @@ def build_payment(card: dict, player: dict | None = None) -> dict:
 _SPACE_BONUS_VALUE = {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 0.5}
 
 
+def _bonus_weight(b: int, tile_type: str) -> float:
+    """Gewicht eines Platzierungsbonus bei der FELD-Wahl.
+    Regelfall (Greenery/City/Ozean): flach - der Bonus soll die Adjazenz-VP nicht ueberstimmen.
+    Mining-Tiles (Mining Area/Rights): der Feld-Bonus bestimmt, WELCHE Produktion die Karte
+    gibt (Titan 3 M/Einheit vs. Stahl 2) -> hier nach echtem M-Wert gewichten, sonst legt der
+    Bot die Karte auf ein Stahl-Feld, obwohl _mining_prod_value mit Titan gerechnet hat."""
+    if tile_type == "mining":
+        return _SPACE_BONUS_M.get(b, 1.0)
+    return _SPACE_BONUS_VALUE.get(b, 0.5)
+
+
 
 # Server-TileType-Enum (src/common/TileType.ts)
 TILE_GREENERY, TILE_OCEAN, TILE_CITY = 0, 1, 2
@@ -1576,10 +2756,18 @@ def _tile_adjacency_score(tile_type, own_cities, opp_cities,
       neutral:    kein Adjazenz-Nutzen (z.B. Nuclear Zone)   -> guten Greenery-/Stadt-
                   Platz NICHT verschwenden (war vorher der greenery-Default-Bug)."""
     s = oceans * 1.0   # Ozean-Nachbarn ~ +2 MC (halbgewichtet)
+    # LEVER_ADJACENCY_VP (19.07., apeheads Einwand): Ein Adjazenz-VP wurde hier mit 3.0
+    # bewertet, bei "commercial" zwei Zeilen weiter unten aber mit 5.0 - und 5.0 ist die
+    # Konvention des ganzen Bots (1 VP = 5 M). Dieselbe Groesse also 40 % billiger
+    # angesetzt, ausgerechnet bei der laut Grenzrendite GUENSTIGSTEN VP-Quelle:
+    # Stadt neben 5 Gruenflaechen kostet 5 M je VP, ein Waerme-SP 8 M, ein Ozean-SP 18 M.
+    # Folge der Unterbewertung: Feldboni stachen die Adjazenz aus, der Bot schoepfte nur
+    # 43 % seines Adjazenz-Potenzials aus (18 von 42 moeglichen VP in 3 Partien).
+    _adj = 5.0 if LEVER_ADJACENCY_VP else 3.0
     if tile_type == "greenery":
-        s += own_cities * 3.0 - opp_cities * 2.0 + own_greens * 0.5
+        s += own_cities * _adj - opp_cities * 2.0 + own_greens * 0.5
     elif tile_type == "city":
-        s += (own_greens + opp_greens) * 3.0 + free_adj * 0.8   # vorhandene Greenery (sichere VP)
+        s += (own_greens + opp_greens) * _adj + free_adj * 0.8  # vorhandene Greenery (sichere VP)
                                                                 # dominiert ueber freies Potenzial
     elif tile_type == "commercial":
         s += (own_cities + opp_cities) * 5.0                    # 1 VP = 5M je angrenzender Stadt
@@ -1689,7 +2877,7 @@ def get_top_spaces(
         bonuses = space.get("bonus", [])
         if isinstance(bonuses, list):
             for b in bonuses:
-                score += _SPACE_BONUS_VALUE.get(b, 0.5)
+                score += _bonus_weight(b, tile_type)
         own_cities = opp_cities = own_greens = opp_greens = oceans = free_adj = 0
         for ttype, owner in _neighbor_tiles(sid, space_map, adjacency):
             score += _ares_adj_value(ttype, tile_type in ("greenery", "city"))   # Ares: Bonus/Hazard-Malus
@@ -1748,7 +2936,7 @@ def choose_best_space(
         bonuses = space.get("bonus", [])
         if isinstance(bonuses, list):
             for b in bonuses:
-                score += _SPACE_BONUS_VALUE.get(b, 0.5)
+                score += _bonus_weight(b, tile_type)
 
         # Nachbar-Tiles analysieren (flaches Server-Schema: tileType/color)
         own_cities = opp_cities = own_greens = opp_greens = oceans = free_adj = 0
@@ -1826,6 +3014,128 @@ def _placement_bonus(space_id: str, tile_type: str, state: dict) -> float:
     return bonus
 
 
+def _city_potential(space_id: str, state: dict) -> float:
+    """M-Wert der FREIEN Nachbarfelder einer geplanten Stadt (apeheads Henne-Ei-Einwand).
+
+    Jede Gruenflaeche, die spaeter neben dieser Stadt entsteht, bringt ihr +1 VP (5 M).
+    Frueh im Spiel ist das der Hauptgrund, ueberhaupt eine Stadt zu setzen - der Bot sah
+    davon bisher nichts und verlangte die Gruenflaechen im Voraus.
+
+    Gedaempft mit zwei Faktoren, damit daraus kein Freibrief wird:
+      - Restzeit: ohne Generationen entsteht dort nichts mehr
+      - eigene Gruenflaechen-Faehigkeit: Pflanzenproduktion ODER genug Geld/Zeit fuer
+        Greenery-Standardprojekte. Wer beides nicht hat, bekommt die Flaechen nie voll.
+    """
+    if not space_id:
+        return 0.0
+    game   = state.get("game", {})
+    player = state["thisPlayer"]
+    spaces = {s["id"]: s for s in game.get("spaces", [])}
+    if space_id not in spaces:
+        return 0.0
+    adjacency = board_adjacency(spaces)
+
+    free_adj = 0
+    for ttype, _owner in _neighbor_tiles(space_id, spaces, adjacency):
+        if ttype is None:
+            free_adj += 1
+    if not free_adj:
+        return 0.0
+    free_adj = min(float(free_adj), CITY_POTENTIAL_MAX_ADJ)
+
+    r_eff, _gtt = _remaining_gens(game)
+    # Zeitfaktor: bei ~10 Restgenerationen voll, laeuft gegen 0 aus
+    time_f = max(0.0, min(1.0, r_eff / 10.0))
+    # Faehigkeitsfaktor: Pflanzenproduktion zaehlt doppelt (liefert stetig nach),
+    # Geld fuer Greenery-SPs zaehlt schwaecher.
+    plant_prod = player_production(player).get("plants", 0)
+    afford     = player.get("megacredits", 0) / 23.0        # 23 M = 1 Greenery-SP
+    ability    = min(1.0, (plant_prod * 0.35) + min(0.5, afford * 0.15))
+
+    return free_adj * 5.0 * CITY_POTENTIAL_CAP * time_f * ability
+
+
+def _card_tile_value(info: dict, state: dict) -> float:
+    """M-Wert der Kachel, die eine KARTE legt (apeheads Befund 19.07.).
+
+    score_action() bekommt den Platzierungswert ueber `placement_bonus` mitgeliefert,
+    score_card() bisher gar nicht. Diese Funktion schliesst die Luecke.
+
+    Standard-Kachel (Stadt/Gruenflaeche/Ozean) -> voller _placement_bonus, also
+    Adjazenz-VP PLUS Feldbonus. Spezial-Kachel (Lava Flows, Natural Preserve, ...)
+    -> nur der Feldbonus: sie punktet nicht ueber Nachbarschaft.
+
+    `on` schraenkt die zulaessigen Felder ein (land/ocean/volcanic/isolated/city);
+    ohne diese Pruefung wuerde der Bot den besten Bonus auf einem Feld suchen, das er
+    gar nicht bespielen darf.
+    """
+    game   = state.get("game", {})
+    spaces = game.get("spaces", []) or []
+    if not spaces:
+        return 0.0
+
+    tile = info.get("tile") or {}
+    ttype_num = tile.get("type")
+    if ttype_num is None:
+        # Karten, deren Standard-Kachel schon laenger in card_db steht
+        if info.get("city"):
+            ttype_num = TILE_CITY
+        elif info.get("greenery"):
+            ttype_num = TILE_GREENERY
+        elif info.get("oceans"):
+            ttype_num = TILE_OCEAN
+        else:
+            return 0.0
+
+    standard = {TILE_GREENERY: "greenery", TILE_OCEAN: "ocean",
+                TILE_CITY: "city"}.get(ttype_num)
+    on = tile.get("on")
+
+    def zulaessig(s: dict) -> bool:
+        if s.get("tileType") is not None:            # belegt
+            return False
+        st = s.get("spaceType")
+        if st == "colony":
+            return False
+        if on == "ocean":
+            return st == "ocean"
+        if on in ("land", "volcanic", "isolated", "city"):
+            if st != "land":
+                return False
+            if on == "volcanic":
+                return s.get("highlight") == "volcanic"
+            # isolated/city brauchen die Nachbarschaft - konservativ zulassen,
+            # der Bonus selbst wird unten ohnehin je Feld bewertet
+        return st in ("land", "ocean")
+
+    kandidaten = [s for s in spaces if zulaessig(s)]
+    if not kandidaten:
+        return 0.0
+
+    if standard:
+        best = max((_placement_bonus(s["id"], standard, state) for s in kandidaten),
+                   default=0.0)
+    else:
+        # Spezial-Kachel: nur der Feldbonus zaehlt (keine Adjazenz-VP)
+        best = max((sum(_SPACE_BONUS_M.get(b, 1.0) for b in (s.get("bonus") or []))
+                    for s in kandidaten), default=0.0)
+
+    # Wiederholbare Aktion (Aquifer Pumping, Water Import From Europa, ...): die Kachel
+    # entsteht JEDE Generation neu. Wert je Aktivierung = TR + Platzierung - Aktionskosten.
+    act_cost = tile.get("act_cost")
+    if act_cost is not None:
+        r_eff, _gtt = _remaining_gens(game)
+        # _tr_value ist horizontabhaengig (frueher TR ist mehr wert) - dieselbe
+        # Konvention wie ueberall sonst im Bot.
+        je_aktivierung = _tr_value(r_eff) + best - float(act_cost)
+        if je_aktivierung <= 0:
+            return 0.0
+        return je_aktivierung * max(0.0, r_eff) * ACTION_ACTIVATION_RATE
+
+    return best
+
+
+
 def _is_last_generation(state: dict) -> bool:
     """True wenn das Spiel sicher nach dieser Generation endet: alle drei
     globalen Parameter maximal (bzw. Server-Flag isTerraformed). Dann ist
@@ -1870,7 +3180,7 @@ def _planning_needs(state: dict) -> dict:
            "oxygen":      game.get("oxygenLevel", 0),
            "oceans":      game.get("oceans", 0),
            "venus":       game.get("venusScaleLevel", 0)}
-    prod_own = player.get("production", {}) or {}
+    prod_own = player_production(player)
     param: dict = {}; prod: dict = {}
 
     def _scan(cards, do_param):
@@ -1899,7 +3209,7 @@ def _planning_needs(state: dict) -> dict:
                     if 0 < gap <= PLAN_MAX_PROD_GAP:
                         prod[res] = min(PLAN_BONUS_CAP, prod.get(res, 0.0) + ao * PLAN_WEIGHT)
 
-    _scan(player.get("cardsInHand", []), do_param=True)
+    _scan(hand_cards(state), do_param=True)
     _scan(player.get("tableau") or player.get("playedCards") or [], do_param=False)
     needs = {"param": param, "prod": prod}
     state["_plan_needs"] = needs
@@ -1953,7 +3263,26 @@ def score_action(action_type: str, state: dict,
 
     last_gen    = _is_last_generation(state)
     reserve     = 0 if last_gen else MC_RESERVE
-    cost_weight = 0.0 if (last_gen or state.get("_idle_money")) else SP_COST_WEIGHT  # letzte Gen / Leerlauf: Kosten illusorisch
+    # LEVER_LATE_TR: in der Spaetphase sind die SP-Kosten ebenfalls illusorisch -
+    # ungenutztes Geld ist am Spielende wertlos, jedes TR ist 1 VP. Gilt fuer ALLE
+    # Terraform-SPs (Ozean/Temp/Greenery/City/Venus), da alle ueber cost_weight laufen.
+    # LEVER_LATE_TR_NO_CITY (20.07.): Stadt-Projekte sind vom Spaetphasen-Rabatt
+    # AUSGENOMMEN. Der Lever soll die TR-ERNTE steuern - eine Stadt bringt aber kein
+    # TR, sie zaehlt auch in der Neigungskennzahl ausdruecklich nicht als TR-Ernte.
+    # Gemessen (3 Partien): die Neigung kippte auf 40:60 (Ziel ~55:45), gleichzeitig
+    # fielen Stadt-VP von +7.3 auf -5.3 und Karten-VP von -8.7 auf -12.3 - der Bot
+    # verbaute sein Geld in Terraform-Projekten. Das Kostengewicht schlicht anzuheben
+    # haette die Staedte MIT verteuert (city_sp 26.2 -> 15.0) und damit den bereits
+    # eingebrochenen Posten weiter geschwaecht. Stattdessen bleibt city_sp beim
+    # normalen SP_COST_WEIGHT: TR-Projekte werden relativ teurer, Staedte nicht.
+    _late_tr = (LEVER_LATE_TR and param_progress_from_state(state) >= LATE_TR_PROGRESS
+                and not (LEVER_LATE_TR_NO_CITY and action_type == "city_sp"))
+    if last_gen or state.get("_idle_money"):
+        cost_weight = 0.0            # letzte Gen / Leerlauf: Kosten voellig illusorisch
+    elif _late_tr:
+        cost_weight = LATE_TR_COST_WEIGHT   # Spaetphase: Kosten reduziert, aber nicht null
+    else:
+        cost_weight = SP_COST_WEIGHT
     plan        = _planning_needs(state)["param"]  # {param: Bonus} fuer gehaltene Spät-Engines
 
     # ── Pflanzen → Greenery ──────────────────────────────────────────────────
@@ -2073,8 +3402,45 @@ def score_action(action_type: str, state: dict,
         # verknappt legale Plaetze (Stadt-Adjazenz-Verbot) und verschleppt
         # das Spielende (gemessen: 64 Stadt-Aktionen/Partie, Spiele bis
         # Gen 30 im A/A 2026-06-07) -> -3 je bereits eigener Stadt.
-        gross = 9 + placement_bonus
-        net   = gross - cost * cost_weight - 5 * player.get("citiesCount", 0)
+        # apeheads Befund 18.07.: Der Bot lehnte in Gen 10 eine Stadt inmitten von FUENF
+        # eigenen Gruenflaechen ab (5 sichere VP = 25 M plus MC-Produktion fuer 25 M).
+        # Ursache war der pauschale Staedte-Malus, der die Adjazenz-VP mit auffrass:
+        # gross 9+25=34, minus 25 Kosten, minus 5x2 Malus = -1 -> Score 0. Ab der
+        # dritten Stadt lehnte der Bot JEDE Stadt ab, egal wie gut das Feld war.
+        # Der Malus war zudem DOPPELT gemoppelt: die Basis ist laengst bonus-getrieben,
+        # ein Feld ohne Gruenflaechen-Nachbarn scort schon bei null Staedten auf 0. Die
+        # dokumentierten -2.92 VP stammen laut Kommentar oben aus der PAUSCHALEN Basis
+        # von damals, nicht aus einem fehlenden Malus.
+        # NEU: Der Malus daempft nur noch den GRUNDWERT (MC-Produktion, Platzwert), der
+        # mit jeder Stadt tatsaechlich weniger wert wird - die sicheren Adjazenz-VP
+        # bleiben unangetastet. Ein wirklich gutes Feld wird damit auch als vierte Stadt
+        # gebaut, ein mittelmaessiges nicht. -3 entspricht der dokumentierten Absicht
+        # im Kommentar oben (der Code zog -5 ab).
+        # apeheads Einwand (19.07., spielmechanisch zwingend): Ein Staedte-Malus ergibt
+        # KEINEN Sinn. Stadt-VP zaehlen PRO angrenzender Gruenflaeche, und eine
+        # Gruenflaeche bedient MEHRERE Staedte gleichzeitig - eine Gruenflaeche zwischen
+        # drei eigenen Staedten bringt 1 TR + 4 VP. Ein Cluster ist also EFFIZIENTER,
+        # nicht schlechter. Der Wert einer Stadt haengt am Feld, nicht daran, wie viele
+        # man schon hat. Der Malus ist ersatzlos entfallen.
+        # Die alte Begruendung (64 Stadt-Aktionen/Partie, Spiele bis Gen 30) traf die
+        # PAUSCHALE Basis von damals; seit die Basis bonus-getrieben ist, bremst sie
+        # selbst: ein Feld ohne Gruenflaechen-Nachbarn scort 9 + 0 - 25 < 0 -> nie.
+        # Kalibrierung ohne Malus: 3 Gruenflaechen = 9 + 15 - 25 = -1 (break-even, wie
+        # im BGG-Kommentar oben beabsichtigt), 5 Gruenflaechen = +9 -> wird gebaut.
+        if LEVER_CITY_ADJACENCY:
+            if LEVER_CITY_POTENTIAL:
+                # Grundwert ZEITABHAENGIG: die Stadt gibt +1 MC-Produktion, die ueber
+                # alle Restgenerationen laeuft. Pauschal 9 unterschaetzte sie frueh
+                # (r_eff 12 -> 12 M) und ueberschaetzte sie spaet (r_eff 3 -> 3 M).
+                # Das Potenzial freier Nachbarfelder steckt bereits im placement_bonus
+                # (siehe _best_pb -> _city_potential).
+                base = _remaining_gens(state.get("game", {}))[0]
+                net  = base + placement_bonus - cost * cost_weight
+            else:
+                net = 9 + placement_bonus - cost * cost_weight
+        else:
+            gross = 9 + placement_bonus
+            net   = gross - cost * cost_weight - 5 * player.get("citiesCount", 0)
         net += max(_milestone_action_bonus("city_sp", state),
                    _milestone_complete_bonus("city_sp", state))   # Pursue/Abschluss: Mayor
         return max(0, net) * 3
@@ -2092,6 +3458,13 @@ def score_action(action_type: str, state: dict,
         # zuerst alles Sinnvolle (inkl. Endgame-VP-Karten) gespielt wird.
         if _is_last_generation(state):
             return 5
+        # ★ ZURUECKGENOMMEN 20.07.: Der Score lag am 19.07. kurzzeitig UNTER dem Pass
+        # (0.25), um apeheads Beobachtung "verkauft als erstes seine Starthand" zu
+        # beheben. Das war die falsche Stellschraube: PASSEN BEENDET DIE GENERATION,
+        # Verkaufen nicht. Liegt jede andere Option bei 0 - in Gen 1 der Normalfall -,
+        # dann ist "1 M nehmen und weiterspielen" besser als "aussteigen". Der Fehler
+        # sass nie im Score, sondern in der SCHWELLE, welche Karten ueberhaupt als
+        # verkaufswuerdig gelten (siehe SELL_THRESHOLD_EARLY weiter unten).
         return 1
 
     if action_type == "card_action":
@@ -2107,7 +3480,8 @@ def score_action(action_type: str, state: dict,
             return -1.0
         once = float(info.get("action_once", 0) or 0)
         draw = float(info.get("action_draw", 0) or 0)
-        val  = once + 2.0 * draw
+        _dv  = DRAW_CARD_VALUE if LEVER_DRAW_VALUE else DRAW_ACTION_OLD
+        val  = once + _dv * draw
         if val > 0:
             return val * CARD_PLAY_SCALE
         # val <= 0: Aktion ohne bezifferten Netto-Ertrag. KEIN Pauschal-Fallback
@@ -2120,7 +3494,20 @@ def score_action(action_type: str, state: dict,
         return 0.0
 
     if action_type == "pass":
-        return 4
+        # Der Pass-Score war fest 4. Eine Karte wird nur gespielt, wenn score*CARD_PLAY_SCALE
+        # (=3) den Pass schlaegt -> alles mit score < 1.33 blieb LIEGEN. Gemessen (Partie
+        # 13.07.): Hand stabil 12-13 Karten, 4-8 davon spielbar-positiv, 46-69 M€ auf der
+        # Hand - und der Bot passte 29x und VERKAUFTE am Ende 9 Karten. Er spielte nur
+        # 15 Karten in 12 Generationen.
+        # Fix: Wer Geld UND spielbare Karten hat, hat keinen Grund zu passen. Der Pass-Wert
+        # sinkt mit dem ungenutzten Handvorrat - dann setzen sich auch knapp positive Karten
+        # gegen den Pass durch. Ohne Vorrat/Geld bleibt der alte Wert (Pass ist dann richtig).
+        _p    = state.get("thisPlayer", {}) or {}
+        _mc   = _p.get("megacredits", 0) or 0
+        _hand = _p.get("cardsInHandNbr", len(_p.get("cardsInHand") or []))
+        if _mc >= PASS_IDLE_MC and _hand >= PASS_IDLE_HAND:
+            return PASS_SCORE_IDLE          # Geld + Karten da -> passen ist Verschwendung
+        return PASS_SCORE
 
     return 0
 
@@ -2265,7 +3652,7 @@ def handle_initial_cards(state: dict) -> dict:
     responses = []
     for option in waiting.get("options", []):
         title = str(option.get("title", "")).lower()
-        cards = option.get("cards", [])
+        cards = _playable(option.get("cards", []))
         min_c = option.get("min", 0)
 
         if "ceo" in title:
@@ -2397,9 +3784,18 @@ _REMOVAL_RES = ("microbe", "animal", "plant", "resource", "floater", "science",
                 "data", "fighter", "asset", "camp", "fleet", "preservation")
 
 
+def _playable(cards: list) -> list:
+    """Filtert Karten mit isDisabled=True heraus. Der Server markiert damit Optionen, die
+    NICHT gewaehlt werden duerfen (im Draft z.B. bereits vergriffene Karten, bei Standard-
+    projekten unbezahlbare). Der Bot ignorierte das Flag komplett -> waehlte eine gesperrte
+    Karte -> Server 400 -> nach 4 Versuchen Spielabbruch (real passiert: 'Field-Capped City'
+    mit isDisabled=True im Draft)."""
+    return [c for c in (cards or []) if not (isinstance(c, dict) and c.get("isDisabled"))]
+
+
 def handle_card(state: dict) -> dict:
     waiting = state["waitingFor"]
-    cards   = waiting.get("cards", [])
+    cards   = _playable(waiting.get("cards", []))
     raw_title = waiting.get("title", "")
     min_c   = waiting.get("min", 1)
     max_c   = waiting.get("max", min_c)
@@ -2409,15 +3805,53 @@ def handle_card(state: dict) -> dict:
     if isinstance(raw_title, dict):
         data = raw_title.get("data", [])
         types_in_data = {item.get("type") for item in data}
-        # type=2 mit value=Farbe = Draft-Richtungsinfo → als normaler Draft behandeln
+        # type=2 mit value=Farbe = Draft-Richtungsinfo (Kartenfluss zwischen Spielern).
+        # Das ist der DRAFT -- inkl. der Repick-Phase "You can change your selection until all
+        # players have selected" (Draft.ts, repick=true). ACHTUNG: In dieser Phase steht im
+        # thisPlayer `needsToResearch=true` (der Spieler MUSS gleich researchen) -- das ist ein
+        # ZUKUNFTS-Flag, NICHT der aktuelle Zustand. Massgeblich ist allein min/max der
+        # waitingFor-Struktur: der Server verlangt GENAU `max` Karten (hier cardsToKeep, meist
+        # 1). Frueherer Bug (15.07.): Bot las needsToResearch und schickte choose_cards_to_buy
+        # (2 Karten) bei max=1 -> HTTP 400 "Not a valid SelectCardResponse". Davor: gar keine
+        # min/max-Beachtung -> Endlosschleife. Jetzt: choose_draft_card, streng auf max gekappt.
         if types_in_data == {2}:
-            # Karten sind in waiting.cards
-            if cards:
-                chosen = choose_draft_card(cards, state)
-                log.info("  📋 Draft (and-format): behalte '%s' aus %d Karten",
-                         chosen, len(cards))
-                return {"type": "card", "runId": state["runId"], "cards": [chosen]}
-            return {"type": "card", "runId": state["runId"], "cards": []}        
+            k = max(1, int(max_c))                    # cardsToKeep aus der Anfrage (min==max)
+            # Vom Server abgelehnte Karten ausschliessen (siehe _draft_rejected). Nur wenn
+            # dadurch ueberhaupt noch etwas uebrig bleibt - sonst lieber den vollen Pool
+            # versuchen als eine leere Antwort zu schicken.
+            if _draft_rejected:
+                _filtered = [c for c in cards if c.get("name") not in _draft_rejected]
+                if len(_filtered) >= k:
+                    if len(_filtered) != len(cards):
+                        log.info("  📋 Draft: überspringe abgelehnte Karte(n) %s",
+                                 sorted(_draft_rejected & {c.get("name") for c in cards}))
+                    cards = _filtered
+            if not cards:
+                return {"type": "card", "runId": state["runId"], "cards": []}
+            # REPICK-STABILITAET: pro Draft-Runde EINMAL entscheiden und festhalten. Verhindert
+            # das Oszillieren, wenn der Server dieselben Karten zum Umwaehlen erneut anbietet.
+            ckey = _draft_cache_key(state, cards)
+            cached = _draft_choice_cache.get(ckey)
+            available = {c.get("name") for c in cards}
+            if cached and all(nm in available for nm in cached) and len(cached) == k:
+                # Wiederholte Anfrage fuer denselben Pool (Repick): dieselbe Wahl erneut.
+                # Wird MITGELOGGT - frueher war dieser Pfad stumm, wodurch im Absturzlog
+                # (18.07.) eine Antwort ohne jede Draft-Zeile erschien und die Ursache
+                # nicht ablesbar war.
+                log.info("  📋 Draft: wiederhole Wahl %s (Cache, %d Karten im Pool)",
+                         list(cached), len(cards))
+                return {"type": "card", "runId": state["runId"], "cards": list(cached)}
+            picks = []
+            pool  = list(cards)
+            while pool and len(picks) < k:             # k-mal die beste noch verfuegbare Karte
+                nm = choose_draft_card(pool, state)
+                picks.append(nm)
+                pool = [c for c in pool if c.get("name") != nm]
+            if len(_draft_choice_cache) > 4000:        # defensiv gegen unbegrenztes Wachstum
+                _draft_choice_cache.clear()
+            _draft_choice_cache[ckey] = tuple(picks)
+            log.info("  📋 Draft: behalte %s (max=%d) aus %d Karten", picks, k, len(cards))
+            return {"type": "card", "runId": state["runId"], "cards": picks}
         # type=1 = Amount. ACHTUNG: Steht zusätzlich ein type=0 (Ressourcenname) im data,
         # ist der Wert die RESSOURCEN-Menge (z.B. "add 2 Microbe"), NICHT die Kartenzahl –
         # die ergibt sich dann aus min/max (oft genau 1 Zielkarte). Sonst (reines "keep N")
@@ -2563,15 +3997,32 @@ def _player_stats(state: dict) -> dict:
     own_cities    = 0
     own_greeneries = 0
     for s in spaces:
-        tile = s.get("tile")
-        if not tile:
+        # ★ BUGFIX 19.07. (Server-Repo verifiziert): SpaceModel traegt `tileType` und
+        # `color` FLACH auf dem Feld - ein verschachteltes `tile`-Objekt gibt es NICHT
+        # (src/common/models/SpaceModel.ts). Hier stand `tile = s.get("tile")` mit
+        # anschliessendem `if not tile: continue` -> die Schleife brach bei JEDEM Feld
+        # sofort ab, own_cities und own_greeneries blieben IMMER 0. Folge: die
+        # Meilenstein-Luecken fuer Mayor (3 Staedte) und Gardener (3 Gruenflaechen)
+        # wurden nie kleiner als 3, der Bot konnte sie nie einplanen. Der tileType-Fix
+        # vom 18.07. lief ins Leere, weil schon die Datenquelle falsch war.
+        # `_neighbor_tiles` las an anderer Stelle laengst korrekt flach - die beiden
+        # Annahmen standen unbemerkt nebeneinander.
+        t = s.get("tileType")
+        if t is None:
             continue
-        pid = tile.get("playerId") or s.get("playerId")
-        if pid != my_color:
+        if s.get("color") != my_color:
             continue
-        t = tile.get("tileType", -1)
-        if t == 0:    own_greeneries += 1   # Greenery
-        elif t == 1:  own_cities     += 1   # City
+        # TileType (src/common/TileType.ts, im Repo verifiziert 18.07.):
+        #   0 = GREENERY, 1 = OCEAN, 2 = CITY, 3 = CAPITAL, 20 = OCEAN_CITY ...
+        # BUG bis 18.07.: `elif t == 1: own_cities += 1` zaehlte die eigenen OZEANE als
+        # Staedte, und echte Staedte (2/3/20/...) wurden NIE gezaehlt. Folge: der
+        # Mayor-Meilenstein (3 Staedte) wurde voellig falsch bewertet - je nach Lage zu
+        # frueh (Ozeane) oder nie (Staedte unsichtbar). Dieselbe Verwechslung war schon
+        # einmal in _dynamic_value gefixt worden (_CITY_TILE_TYPES), hier aber nicht.
+        if t == 0:
+            own_greeneries += 1
+        elif t in _CITY_TILE_TYPES:
+            own_cities += 1
 
     # Gespielte Karten + Tags aus card_db
     played = player.get("tableau") or player.get("playedCards") or []
@@ -2584,7 +4035,7 @@ def _player_stats(state: dict) -> dict:
             tag_counts[t] = tag_counts.get(t, 0) + 1
 
     # Handkarten
-    hand_size = len(player.get("cardsInHand", []))
+    hand_size = len(hand_cards(state))
 
     # Floater-Ressourcen auf Karten (fuer Hoverlord-Meilenstein). Das Tableau liefert pro
     # Karte 'resources' (Anzahl); Floater-Halter kommen aus _FLOATER_CARDS (aus TS extrahiert).
@@ -3074,8 +4525,14 @@ def _score_milestone(title: str, state: dict, known_claimable: bool = False) -> 
         return 0
 
     tl = turns_left(state)
-    if tl < 1:
-        return 0
+    # BUGFIX 18.07.: Hier stand `if tl < 1: return 0` — ab turns_left<1 scorte JEDER
+    # Meilenstein 0, der Bot claimte in der Endphase also grundsaetzlich keinen mehr.
+    # turns_left rechnet mit dem lastSoloGeneration-Default 14, d.h. in 2P-Partien war
+    # ab Gen 14 Schluss — apeheads Partien liefen bis Gen 18/16/14, dort war die ganze
+    # Schlussphase gesperrt. Sachlich falsch: 5 VP zaehlen in der letzten Generation
+    # genauso wie in Gen 9, und die Kosten regelt der Score-Vergleich ohnehin. Die
+    # Sperre ist deshalb ersatzlos entfallen (gap==1 bleibt an tl gebunden, siehe unten -
+    # dort ist sie berechtigt, weil der Meilenstein erst noch erreicht werden muss).
 
     stats = _player_stats(state)
     # Kommt der Titel aus der Server-Option "Claim a milestone", ist er
@@ -3084,6 +4541,12 @@ def _score_milestone(title: str, state: dict, known_claimable: bool = False) -> 
 
     # ── Bewertung ─────────────────────────────────────────────────────────────
     if gap == 0:
+        # EXTREMTEST (nur noch fuer Kausalitaetstests, Standard False): erfuellt +
+        # freier Slot -> claimen, egal was sonst moeglich waere.
+        if LEVER_MILESTONE_GREEDY and free_slots > 0:
+            log.info("   🏆 GREEDY: Meilenstein '%s' erfuellt -> claimen (Slots frei: %d)",
+                     title, free_slots)
+            return MILESTONE_GREEDY_SCORE
         # Erfüllt → claimbar. Basiswert = 25 MC (5 VP) minus Kosten.
         net = 25 - cost
         opp_gaps = [_milestone_gap(title, o) for o in _opponent_stats(state)]
@@ -3093,6 +4556,10 @@ def _score_milestone(title: str, state: dict, known_claimable: bool = False) -> 
             urgency = 45   # Gegner kann denselben Meilenstein sofort claimen
         elif opp_gap <= 1:
             urgency = 35   # Gegner 1 Schritt entfernt
+        elif opp_gap <= 3:
+            urgency = 20   # Gegner nah dran - Abstaende schrumpfen stetig
+        elif opp_gap <= 6:
+            urgency = 10   # Gegner in Reichweite weniger Generationen
         elif claimed_count >= 2:
             urgency = 35   # letzter freier Slot – knapp, jetzt sichern
         if LEVER_MILESTONE and urgency < 35:
@@ -3293,7 +4760,14 @@ def _score_award(title: str, state: dict) -> float:
     game   = state.get("game", {})
     mc     = player.get("megacredits", 0)
 
-    funded     = game.get("fundedAwards", [])
+    # ★ BUGFIX 19.07.: Hier stand `game.get("fundedAwards", [])` - ein Feld, das es im
+    # GameModel NICHT gibt (der Server liefert `awards` mit FundedAwardModel; gefundet
+    # ist ein Award, wenn `playerName` gesetzt ist). Die Liste war also IMMER leer:
+    # der Bot hielt jeden Award fuer den ersten (Kosten 8 statt 14/20) und haette die
+    # Sperre `fund_count >= 3` nie ausgeloest. Zwanzig Zeilen weiter oben in derselben
+    # Datei steht die korrekte Variante - dieselbe Doppel-Annahme wie bei den Feldern
+    # (_neighbor_tiles flach vs. _player_stats verschachtelt).
+    funded     = [a for a in game.get("awards", []) if a.get("playerName")]
     fund_count = len(funded)
     if fund_count >= 3:
         return 0
@@ -3354,6 +4828,19 @@ def _score_award(title: str, state: dict) -> float:
     # Sponsern den letzten Zug gegen marginale Kartenplays gewinnt.
     if comfortable and tl <= 1:
         net *= 1.4
+    # LEVER_AWARD_SCALE (20.07.): Award-Scores standen in einer ANDEREN EINHEIT als
+    # Kartenscores. Karten werden mit CARD_PLAY_SCALE (3.0) multipliziert, dieser Wert
+    # hier nicht - ein zweiter Award (net 11) verlor damit gegen fast jede Karte
+    # (Decomposers skaliert 26.0, Marketing Experts 18.6), ein dritter (net 5) sowieso.
+    # Sichtbar wurde das erst durch den fundedAwards-Bugfix: solange der Bot JEDEN Award
+    # fuer den ersten hielt (Kosten 8, net 17), lag er ueber der Kartenschwelle und
+    # fundete munter - Awards +8.8 VP zugunsten des Bots. Mit korrekten Kosten kippte es
+    # auf -6.7. Gemessen an 3 Partien: der Bot fuehrte bei Landlord 17:11, Banker 16:6,
+    # Miner 8:4, Entrepreneur 5:1 - und fundete KEINEN davon.
+    # Die Fuehrungs- und Zeit-Gates oben bleiben unangetastet; nur der Wert eines
+    # bereits validen Sponserings wird in dieselbe Einheit gebracht wie Kartenplays.
+    if LEVER_AWARD_SCALE:
+        net *= CARD_PLAY_SCALE
     log.info("   🥇 Award '%s' sponsern (own=%d, opp_max=%d, lead=%d, cost=%d, net=%.0f%s)",
              title, own, opp_max, lead, cost, net, ", komfortabel" if comfortable else "")
     return max(0, net)
@@ -3476,7 +4963,7 @@ def _diag_holding(state: dict) -> None:
     pc_opt = next((o for o in options if o.get("type") == "projectCard"), None)
     hand_cards: list = []
     if pc_opt is not None:
-        hand_cards = [c for c in pc_opt.get("cards", [])
+        hand_cards = [c for c in _playable(pc_opt.get("cards", []))
                       if not c.get("name", "").endswith(":SP")
                       and c.get("name") not in SP_NAMES]
     if not hand_cards:
@@ -3565,6 +5052,38 @@ def handle_or(state: dict) -> dict:
         _raw_title = opt.get("title", "")
         title = (_raw_title.get("message", "") if isinstance(_raw_title, dict)
                  else str(_raw_title)).lower()
+
+        # ★ EINLOESE-OPTION (20.07., apeheads Befund: "16 Bakterien auf Sulphur-Eating
+        # Bacteria und nutzt sie nie" - das waeren 48 M gewesen). handle_or hatte fuer
+        # "Ressourcen gegen Ertrag eintauschen" GAR KEINEN Zweig; die Option fiel in den
+        # generischen Fallback und der Bot nahm Index 0, also "1 Mikrobe hinzufuegen".
+        # Betrifft 20 Karten mit Einloese-Aktion. Der Ertrag steht im Titel ("gain 3 M€
+        # per microbe removed"), die verfuegbare Menge im max-Feld des SelectAmount.
+        if LEVER_REDEEM and otype in ("amount", "selectAmount"):
+            _m = _REDEEM_RE.search(title)
+            _max = opt.get("max") or 0
+            if _m and _max > 0:
+                _je = float(_m.group(1) or _m.group(2))
+                _ertrag = _je * _max
+                # NUR in der Schlussphase einloesen. Der Bot hat EINE Aktion je
+                # Generation: acht Generationen sammeln und dann 24 M kassieren schlaegt
+                # viermal je 3 M einloesen deutlich. Zu frueh einloesen waere also ein
+                # Eigentor - der Fehler lag darin, dass NIE eingeloest wurde.
+                # Ausnahme: akuter Geldmangel, dann zaehlt Liquiditaet mehr als Sammeln.
+                _prog = param_progress_from_state(state)
+                _knapp = (player.get("megacredits", 0) or 0) < REDEEM_CASH_FLOOR
+                if not (_prog >= REDEEM_PROGRESS or _knapp
+                        or _is_last_generation(state)):
+                    continue
+                # Gegen den Alternativzweig "eine Ressource hinzufuegen" antreten zu
+                # lassen reicht nicht: dessen Wert steckt in action_once und wird hier
+                # nicht berechnet. Der Ertrag ist echtes Geld, also direkt in M bewerten.
+                candidates.append((_ertrag, i,
+                                   {"type": "or", "runId": state["runId"], "index": i,
+                                    "response": {"type": "amount", "amount": _max}}))
+                log.info("  💰 Einloesen: %d Ressourcen x %.0f M = %.0f M",
+                         _max, _je, _ertrag)
+                continue
 
         # Pflicht-Erstaktion "Place a city tile" (Tharsis Republic u.a.): MUSS vor allen
         # anderen Zweigen geprueft werden, sonst faengt ein frueherer elif (z.B. der
@@ -3666,7 +5185,7 @@ def handle_or(state: dict) -> dict:
 
         # Handkarte spielen oder Standard-Projekt
         elif otype == "projectCard":
-            all_cards = opt.get("cards", [])
+            all_cards = _playable(opt.get("cards", []))
 
             # Standard-Projekt-Namen explizit ausschließen
             SP_NAMES = {"Aquifer", "Greenery", "City", "Power Plant:SP", "Asteroid:SP"}
@@ -3745,11 +5264,23 @@ def handle_or(state: dict) -> dict:
 
             # Placement-Bonus: bestes verfügbares Feld für Ozean/Greenery/Stadt
             space_map = {s["id"]: s for s in state["game"].get("spaces", [])}
+            # ★ BUGFIX 19.07.: `not s.get("tile")` war IMMER wahr (siehe SpaceModel oben)
+            # -> als frei galten ALLE Felder, auch laengst bebaute. Der beste
+            # Platzierungsbonus wurde damit auf belegten Feldern gesucht und die
+            # Standardprojekte Stadt/Greenery/Ozean systematisch ueberbewertet.
             all_space_ids = [s["id"] for s in state["game"].get("spaces", [])
-                             if not s.get("tile") and s.get("spaceType") != "colony"]
+                             if s.get("tileType") is None
+                             and s.get("spaceType") != "colony"]
             def _best_pb(tile_type: str) -> float:
                 if not all_space_ids:
                     return 0.0
+                # Fuer Staedte zaehlt neben den bestehenden Nachbarn auch das POTENZIAL
+                # freier Felder (apeheads Henne-Ei-Einwand) - sonst waere eine Stadt frueh
+                # nie etwas wert, obwohl genau dann ihr Adjazenz-Potenzial am groessten ist.
+                if tile_type == "city" and LEVER_CITY_POTENTIAL:
+                    return max((_placement_bonus(sid, tile_type, state)
+                                + _city_potential(sid, state)
+                                for sid in all_space_ids), default=0.0)
                 return max((_placement_bonus(sid, tile_type, state)
                             for sid in all_space_ids), default=0.0)
 
@@ -3787,28 +5318,57 @@ def handle_or(state: dict) -> dict:
                                     "payment": build_payment(sp_card, player),
                                 },
                                 "_label": f"🏗 {sp_name} SP (score={sc:.1f})",
+                                "_cost": cost,          # nur fuer die Telemetrie
                             }))
 
         # Karte verkaufen
         elif otype == "card" and "sell" in title:
-            sell_cards = opt.get("cards", [])
+            sell_cards = _playable(opt.get("cards", []))
             if sell_cards:
-                # Verkaufe Karte mit niedrigstem Score
-                worst = min(sell_cards, key=lambda c: score_card(c, state))
-                worst_score = score_card(worst, state)
                 # Normal nur klar wertlose Karten (<-2), damit momentan schwach
                 # bewertete Engines nicht fuer 1 M€ verschleudert werden. In der
                 # LETZTEN Generation alles, was nicht mehr gespielt wird (score<=0),
-                # zu M€ machen statt verfallen lassen (eine Karte/Zug; die guten
-                # holt zuvor der Endgame-VP-Boden via score_card).
-                sell_threshold = 0.01 if _is_last_generation(state) else -2.0
-                if worst_score < sell_threshold:
-                    sc = score_action("sell", state)
-                    candidates.append((sc, i, {
-                        "type": "or", "runId": state["runId"], "index": i,
-                        "response": {"type": "card", "cards": [worst["name"]]},
-                        "_label": f"💰 Verkaufe {worst['name']} (score={worst_score:.1f})",
-                    }))
+                # zu M€ machen statt verfallen lassen.
+                last_gen = _is_last_generation(state)
+                # ★ FIX 20.07. (apeheads Beobachtung, richtige Stellschraube):
+                # Die Schwelle -2.0 ist frueh VIEL zu lasch, weil ohne Engine fast jede
+                # Karte negativ scort - gemessen fallen in Gen 1 284 der 956 Karten
+                # darunter, bei 10 Starthandkarten also statistisch DREI. Der Bot
+                # verscherbelte so Karten, die er zwei Generationen spaeter gebraucht
+                # haette. Bei -25.0 sind es 21 Karten (0.2 je Starthand) - das trifft
+                # nur noch die wirklich unspielbaren. Ab SELL_EARLY_GENS gilt wieder
+                # die alte Schwelle, dann ist die Bewertung durch die eigene Engine
+                # aussagekraeftig.
+                early = (state.get("game", {}).get("generation", 1) <= SELL_EARLY_GENS)
+                sell_threshold = (0.01 if last_gen
+                                  else (SELL_THRESHOLD_EARLY if early else -2.0))
+                # Kandidaten: alle Karten unter der Schwelle, aufsteigend nach Score
+                to_sell = sorted(
+                    (c for c in sell_cards if score_card(c, state) < sell_threshold),
+                    key=lambda c: score_card(c, state))
+                if to_sell:
+                    if last_gen:
+                        # Server erlaubt {max: Handkartenzahl} -> ALLE verwertlosen
+                        # Karten in EINEM Zug verkaufen (spart Roundtrips; Karte-fuer-
+                        # Karte war reine Zeitverschwendung, apehead 17.07.).
+                        names = [c["name"] for c in to_sell]
+                        worst_score = score_card(to_sell[0], state)
+                        sc = score_action("sell", state)
+                        candidates.append((sc, i, {
+                            "type": "or", "runId": state["runId"], "index": i,
+                            "response": {"type": "card", "cards": names},
+                            "_label": f"💰 Verkaufe {len(names)} Karten (letzte Gen)",
+                        }))
+                    else:
+                        # Normalfall: nur die eine wertloseste Karte
+                        worst = to_sell[0]
+                        worst_score = score_card(worst, state)
+                        sc = score_action("sell", state)
+                        candidates.append((sc, i, {
+                            "type": "or", "runId": state["runId"], "index": i,
+                            "response": {"type": "card", "cards": [worst["name"]]},
+                            "_label": f"💰 Verkaufe {worst['name']} (score={worst_score:.1f})",
+                        }))
 
         # ACTIVE-Karten-Aktion aktivieren: Server praesentiert dies als
         # SelectCard "Perform an action from a played card" (otype 'card',
@@ -3817,7 +5377,7 @@ def handle_or(state: dict) -> dict:
         # mit dem hoechsten Aktionswert (action_once) und aktivieren sie.
         elif otype == "card" and ("perform an action" in title or "played card" in title
                                    or opt.get("selectBlueCardAction")):
-            act_cards = opt.get("cards", [])
+            act_cards = _playable(opt.get("cards", []))
             if act_cards:
                 temp = state["game"].get("temperature", -30)
                 def _act_value(c):
@@ -3836,8 +5396,9 @@ def handle_or(state: dict) -> dict:
                     # Netto-Ertrag der Aktivierung. action_once nettet bereits
                     # Produktionswert minus Kosten (Space Mirrors: 7 Prod - 7 = 0);
                     # der Karten-Zug fehlt darin und wird hier ergaenzt (~2/Karte).
+                    _dv = DRAW_CARD_VALUE if LEVER_DRAW_VALUE else DRAW_ACTION_OLD
                     return (float(info.get("action_once", 0) or 0)
-                            + 2.0 * float(info.get("action_draw", 0) or 0))
+                            + _dv * float(info.get("action_draw", 0) or 0))
                 best = max(act_cards, key=_act_value)
                 val  = _act_value(best)
                 # Nur aktivieren, wenn die Aktion echten Netto-Ertrag hat. Damit
@@ -3962,7 +5523,7 @@ def handle_or(state: dict) -> dict:
         # oft frueh am staerksten (Karen: Preludes; Clarke: Produktion) - aber nicht in der
         # allerersten Generation verpulvern, wenn der Effekt mit der Generation skaliert.
         elif otype == "card" and "ceo" in title and "once per game" in title:
-            _ceos = opt.get("cards", []) or []
+            _ceos = _playable(opt.get("cards", []))
             if _ceos:
                 _nm  = _ceos[0].get("name", "")
                 _val = score_ceo(_nm, state)
@@ -4016,6 +5577,24 @@ def handle_or(state: dict) -> dict:
     score, idx, payload = candidates[0]
     log.info("  → %s", payload.get("_label", "?"))
 
+    if _TELEM:
+        _lbl = payload.get("_label", "")
+        _pid = state.get("id")
+        if _lbl.startswith("🏗"):
+            _telem_note("sp", payload.get("_cost", 0.0), _pid)
+        elif _lbl.startswith("🃏"):
+            _nm = _lbl[2:].split(" (score=")[0].strip()
+            _telem_note("card", float((card_info(_nm) or {}).get("cost", 0) or 0), _pid)
+        elif _lbl.startswith("⚡"):
+            _telem_note("action", 0.0, _pid)      # Kartenaktion (Expertendaten: BOB 159 vs K4rlchen 70)
+        elif _lbl.startswith("💰"):
+            _telem_note("sell", 0.0, _pid)
+        elif "Pass" in _lbl:
+            # Hat der Bot gepasst, OBWOHL eine Karte spielbar (= Kandidat) war?
+            _had_card = any(str(_l).startswith("🃏") for _s, _i, _p in candidates
+                            for _l in [(_p or {}).get("_label", "")])
+            _telem_note("pass_with_cards" if _had_card else "pass", 0.0, _pid)
+
     if _RLOG:
         # Strand-Detektor: welche Free-Accums bietet der Server in dieser Entscheidung
         # aktivierbar an (im Buendel opt["cards"])? Post-hoc-Query:
@@ -4038,6 +5617,7 @@ def handle_or(state: dict) -> dict:
                                for s, i2, c in candidates[:6]]})
 
     payload.pop("_label", None)
+    payload.pop("_cost", None)
     return payload
 
 
@@ -4335,11 +5915,33 @@ _COLONY_VALUE = {   # grober Ressourcen-Wert-Nudge je Kolonie (Ertragstyp). trac
 }
 TRADE_COST = 7.0   # M-aequivalente Trade-Kosten (9 M€ oder 3 Energie/Titan; Energie oft Ueberschuss)
 DELEGATE_COST = 5.0  # Turmoil: Standardaktion "Delegat entsenden" kostet 5 M€
+PASS_SCORE      = 4.0   # normaler Pass-Wert (kein Geld / keine Karten -> passen ist richtig)
+PASS_SCORE_IDLE = 0.5   # Pass-Wert, wenn Geld UND spielbare Karten da sind -> fast nie passen
+PASS_IDLE_MC    = 12    # ab so viel M€ ...
+PASS_IDLE_HAND  = 3     # ... und so vielen Handkarten gilt der IDLE-Wert
 CORP_FIRST_ACTION_VALUE = 20.0  # Korporations-Erstaktion (Valley Trust: 3 Preludes ziehen;
                                 # Point Luna: Karten; ...) - praktisch immer stark, muss den
                                 # Pass sicher schlagen.
-DRAW_CARD_VALUE = 4.5  # Wert einer gezogenen Karte (spart 3 M€ Kauf + Optionswert; der
-                       # Bot ist chronisch kartenarm -> Kartenquellen sind besonders wertvoll)
+# ── KARTENZIEHEN: EIN WERT, DREI ZAHLEN ────────────────────────────────────────────────────
+# Gemessen (Telemetrie + 5 Expertenpartien): Der Bot ERWIRBT 2,07 Karten/Gen, BOB ftl. (der
+# staerkste Spieler der Runde) 4,15. Beide Kanaele des Bots sind halb so gross -- gekauft
+# 1,46 vs 2,20 UND gezogen 0,62 vs 1,30.
+# Ursache im Code: derselbe Effekt wird an drei Stellen unterschiedlich bewertet.
+#   card_db  `draw_cards`  =  1.0 M€ je Karte   (einmaliges "ziehe N Karten")
+#   _action_value/_act_value = 2.0 M€ je Karte  (wiederholbare Zieh-AKTION, hartcodiert)
+#   DRAW_CARD_VALUE          = 4.5 M€           <- und die wurde NUR im Turmoil-Policy-
+#                                                  Handler (Scientists) benutzt, sonst nirgends.
+# Der Kommentar an der Konstante sagte bereits "der Bot ist chronisch kartenarm ->
+# Kartenquellen sind besonders wertvoll". Die Konstante war geschrieben und nie angeschlossen
+# -- dieselbe Code/Daten-Entkopplung wie feeds/synergy_adds.
+# LEVER_DRAW_VALUE macht DRAW_CARD_VALUE zur EINZIGEN Quelle der Wahrheit (33 Karten).
+# Ankerpunkt fuer den Wert: eine Karte im Research kostet 3 M€ -- so viel ist ein Zug
+# mindestens wert. 4.5 = 3 M€ gespart + Optionswert.
+LEVER_DRAW_VALUE = True
+DRAW_CARD_VALUE = 4.5  # Wert einer gezogenen Karte. 3.0 = konservativ (= Research-Preis),
+                       # 4.5 = Kaufpreis + Optionswert, 2.0/1.0 = altes (inkonsistentes) Verhalten
+DRAW_BGG_M      = 1.0  # flacher Satz in card_db (score_breakdown: draw_cards)
+DRAW_ACTION_OLD = 2.0  # bisheriger hartcodierter Satz fuer action_draw
 TR_VALUE = 10.0      # Bot-Konvention (BGG): 1 TR = 10 M (1 VP + Einkommen jede Generation)
 INFLUENCE_VALUE = 4.0  # 1 Einfluss: mildert Global Events + Ruling-Boni. Konservativ bewertet -
                        # er lohnt nur, wenn ein Global Event den Bot ueberhaupt trifft.
@@ -4470,7 +6072,7 @@ def _party_value(party: str, state: dict) -> float:
     else:
         v = 0.0
     # Handkarten, die genau diese Partei als Ruling-Requirement brauchen -> Bonus
-    for c in (state.get("thisPlayer", {}).get("cardsInHand") or []):
+    for c in hand_cards(state):
         nm = c.get("name") if isinstance(c, dict) else c
         for r in ((card_info(nm) or {}).get("requirements") or []):
             if r.get("type") == "party" and \
@@ -4706,6 +6308,36 @@ def handle_delegate(state: dict) -> dict | None:
     return {"type": "delegate", "runId": state["runId"], "player": chosen}
 
 
+def handle_ares_global_parameters(state: dict) -> dict:
+    """Ares 'Adjust Ares global parameters up to 1 step' (z.B. Butterfly Effect).
+    Vier Regler, je -1/0/+1: lowOcean (Erosionen erscheinen), highOcean (Dust
+    Storms entfernt), Temperatur, Sauerstoff.
+
+    STRATEGIE (apehead, TM-Experte): IMMER -1 auf allen vieren. Begruendung:
+    Der Bot profitiert von einem LAENGEREN Spiel (seine Engine kommt spaet, s.
+    TR-Horizont). Alle Parameter runterzuschieben verzoegert das Erreichen der
+    Maximalwerte -> Spiel dauert laenger. Zusaetzlich vermeidet -1 die Hazard-
+    VERSCHAERFUNGEN, die beim Hochschieben auftreten (severe erosions/dust storms).
+
+    SICHER: Der Server validiert nur inRange(-1..1) und verschiebt jeden Parameter
+    nur wenn `available`. -1 ist immer im gueltigen Bereich, wird nie abgelehnt;
+    nicht-verfuegbare Parameter ignoriert der Server. (TS: ShiftAresGlobalParameters
+    .process -> inRange; ShiftAresGlobalParametersDeferred -> if available.)"""
+    waiting = state.get("waitingFor", {})
+    runId = waiting.get("runId") or state.get("runId")
+    resp = {
+        "lowOceanDelta":    -1,
+        "highOceanDelta":   -1,
+        "temperatureDelta": -1,
+        "oxygenDelta":      -1,
+    }
+    log.info("  🦋 Ares-Parameter: alle -1 (Spiel verlaengern, Hazards vermeiden)")
+    out = {"type": "aresGlobalParameters", "response": resp}
+    if runId:
+        out["runId"] = runId
+    return out
+
+
 HANDLERS = {
     "initialCards": handle_initial_cards,
     "card":         handle_card,
@@ -4718,6 +6350,7 @@ HANDLERS = {
     "selectAmount": handle_amount,   # Alias
     "player":       handle_player,   # Spielerauswahl (z.B. Cloud Seeding)
     "productionToLose": handle_production_to_lose,   # Ares-Hazard-Strafe
+    "aresGlobalParameters": handle_ares_global_parameters,  # Ares: Butterfly Effect etc.
     "colony":       handle_colony,   # Colonies: Handel/Bau-Auswahl
     "party":        handle_party,     # Turmoil: Partei waehlen
     "delegate":     handle_delegate,  # Turmoil: Delegat waehlen
@@ -4728,6 +6361,7 @@ def decide(state: dict) -> dict | None:
     waiting = state.get("waitingFor")
     if not waiting:
         return None
+    _telem_gen(state)
     if _DUMP_WF:
         try:
             _g = state.get("game") or {}

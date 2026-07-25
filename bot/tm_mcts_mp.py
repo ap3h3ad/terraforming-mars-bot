@@ -69,6 +69,11 @@ except ImportError:
     def card_features(info, **kw): return []
 
 # Importiere MCTS-Hilfsfunktionen aus tm_mcts
+try:
+    import shadow_analyze as _shadow
+except Exception:
+    _shadow = None
+
 from tm_mcts import (
     rollout_score, decide_rollout,
     take_snapshot, restore_snapshot,
@@ -260,6 +265,24 @@ def create_mp_game_with_undo(
     if colors is None:
         colors = VALID_COLORS[:n_players]
 
+    # ★ STARTSPIELER 20.07. (apeheads Beobachtung "der Bot ist IMMER Spieler 1"):
+    # Hier stand fest `"first": (i == 0)` - der erste Spieler der Farbliste war IMMER
+    # Startspieler, also immer der Bot. Der Payload schickt zwar `randomFirstPlayer`
+    # mit, aber das Feld existiert NUR im Client (die Web-UI wuerfelt selbst und setzt
+    # dann `first`); im gesamten src/server/ des Servers kommt es nicht vor - der Server
+    # liest ausschliesslich `players[i].first`. Das Flag verpuffte also wirkungslos.
+    # Der Startspieler rotiert danach zwar jede Generation
+    # (Game.ts: firstIndex = (firstIndex + 1) % players.length), aber Generation 1 und
+    # - bei ungerader Endgeneration - eine weitere gingen systematisch an den Bot.
+    # WICHTIG fuer den CRN-A/B: bei gesetztem Seed wird der Startspieler DARAUS
+    # abgeleitet, damit beide Seiten eines Paares denselben Sitz haben. Nur ohne Seed
+    # (Live-Partien) wird echt gewuerfelt. random_first=False behaelt feste Sitze.
+    if random_first:
+        _first_idx = (random.Random(f"first:{seed}").randrange(len(colors))
+                      if seed is not None else random.randrange(len(colors)))
+    else:
+        _first_idx = 0
+
     players = [
         {
             "name":      (human_name if c == human_color
@@ -267,7 +290,7 @@ def create_mp_game_with_undo(
             "color":     c,
             "beginner":  False,
             "handicap":  0,
-            "first":     (i == 0),
+            "first":     (i == _first_idx),
         }
         for i, c in enumerate(colors)
     ]
@@ -348,9 +371,25 @@ def create_mp_game_with_undo(
     if cloned_game_id:
         payload["clonedGamedId"] = cloned_game_id
 
-    r = requests.post(f"{base_url}/api/creategame", json=payload, timeout=15)
-    r.raise_for_status()
-    data = r.json()
+    # Der aktualisierte Server (~07/2026) braucht fuers Draft-Setup deutlich laenger;
+    # mehrere gleichzeitige creategame-Requests (--parallel) ueberschritten das alte
+    # timeout=15 -> "Read timed out", das ganze Paar brach ab (15.07.). Daher: laengeres
+    # Timeout + Retry mit Backoff. Die Erstellung ist idempotent genug (neue game_id je
+    # Versuch); nur bei cloned_game_id ist Vorsicht noetig -> dort NICHT neu wuerfeln,
+    # sondern denselben Klon erneut anfragen.
+    data = None
+    last_exc = None
+    for attempt in range(4):
+        try:
+            r = requests.post(f"{base_url}/api/creategame", json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            break
+        except requests.RequestException as _e:
+            last_exc = _e
+            time.sleep(2.0 * (attempt + 1))   # 2s, 4s, 6s
+    if data is None:
+        raise last_exc
 
     game_id    = data["id"]
     color_to_id = {p["color"]: p["id"] for p in data["players"]}
@@ -1042,6 +1081,14 @@ def run_mcts_bot_mp(
     db_ready         = False
     errors           = 0
     last_key         = None
+    # Draft-Repick-Pools, die dieser Bot in dieser Partie schon beantwortet hat.
+    # Ohne diesen Schutz antwortet der Bot MEHRFACH auf dieselbe Draft-Runde: die
+    # normale Dedup unten haengt an gameAge, und gameAge STEIGT sobald der Mensch
+    # draftet -> Dedup greift nicht mehr -> zweite Antwort auf denselben Pool ->
+    # der Server hat die Karte schon verarbeitet -> "Card <Name> not found" -> HTTP 400
+    # -> nach 4 Versuchen Abbruch (apeheads Absturz 18.07., Gen 12). Die beiden A/B-
+    # Schleifen hatten diesen Schutz laengst (15.07.), der --vs-human-Pfad nicht.
+    repick_done: set = set()
     last_action_time = time.time()   # Zeitstempel letzter erfolgreicher Zug
     mcts_transitions: list[dict] = []
     post_error_counts: dict = {}     # Fehlschläge je Input (gegen Endlosschleifen)
@@ -1073,7 +1120,7 @@ def run_mcts_bot_mp(
         # (kein Spiel endet in Generation 1) - faengt auch unbekannte fruehe Phasen ab.
         _gen = state.get("game", {}).get("generation", 0) or 0
         game_over = (phase == "end") or (
-            not waiting and my_plants < 8 and _gen > 1 and phase not in
+            not waiting and not _can_place_final_greenery(state) and _gen > 1 and phase not in
             ("research", "action", "drafting", "initialdrafting", "solar",
              "preludes", "prelude", "initialcards")
         )
@@ -1103,7 +1150,7 @@ def run_mcts_bot_mp(
                 # ebenfalls deaktivierten 90s-Idle-Backstop (s.u.) - NUR phase=="end";
                 # die Recovery-Schleife erholt sich bei Reaktivierung von selbst.
                 if (_know_opponents and not human_opponent and params_full
-                        and not is_active and not waiting and my_plants < 8):
+                        and not is_active and not waiting and not _can_place_final_greenery(state)):
                     # Alle Parameter maximal + dieser Bot inaktiv.
                     # Prüfe ob auch alle anderen Spieler inaktiv sind
                     # (warten auf Bonusgreenery-Aktionen der Gegner).
@@ -1228,7 +1275,7 @@ def run_mcts_bot_mp(
             # Diagnose-Sicherung: haengt der Bot mit >=8 Pflanzen lange idle OHNE
             # waitingFor, taucht die finale Greenery-Abfrage offenbar nicht im
             # gepollten Zustand auf. Einmalig vollen Zustand (inkl. Gegner) sichern.
-            if (my_plants >= 8 and run_mcts_bot_mp._idle_action_count == 30
+            if (_can_place_final_greenery(state) and run_mcts_bot_mp._idle_action_count == 30
                     and not getattr(run_mcts_bot_mp, "_hang_dumped", False)):
                 try:
                     opp_states = {oid: get_state(base_url, oid)
@@ -1262,16 +1309,57 @@ def run_mcts_bot_mp(
             if run_mcts_bot_mp._poll_count % 33 == 0:
                 log.info("   ⏳ Warte | phase=%s isActive=%s waiting=%s",
                          phase, is_active, wtype or "None")
+            # SCHATTEN-ANALYSE (nur --vs-human, reine Beobachtung): wenn der MENSCH
+            # am Zug ist, loggt der Bot was ER in dessen Position taete + Scores.
+            # Der Diff Mensch<->Bot ist das, was der Bot-vs-Bot-A/B nicht messen kann.
+            if _shadow is not None and human_opponent:
+                for _hid in all_player_ids:
+                    if _hid != player_id:
+                        try:
+                            _shadow.shadow_step(base_url, _hid, get_state, decide, my_color)
+                        except Exception as _se:
+                            # NICHT mehr still verschlucken (18.07.): ein NameError im
+                            # Schatten-Modul liess 7 Partien lang NUR game_start-Marker
+                            # schreiben - der Fehler war nirgends sichtbar, die Spielzeit
+                            # war verloren. Der ERSTE Fehler wird jetzt laut geloggt (mit
+                            # Traceback), danach nur noch alle 50 Vorfaelle, damit die
+                            # Konsole nicht zugespammt wird. Die Partie laeuft weiter -
+                            # die Analyse darf das Spiel nie stoeren.
+                            import traceback as _tb2
+                            run_mcts_bot_mp._shadow_errs = getattr(
+                                run_mcts_bot_mp, "_shadow_errs", 0) + 1
+                            _n = run_mcts_bot_mp._shadow_errs
+                            if _n == 1 or _n % 50 == 0:
+                                log.error("  ❌ SCHATTEN-ANALYSE FEHLGESCHLAGEN (%d×): %s: %s",
+                                          _n, type(_se).__name__, _se)
+                                log.error("     -> im Log fehlen die Entscheidungspunkte! "
+                                          "%s", _tb2.format_exc().strip().splitlines()[-1])
             time.sleep(POLL_INTERVAL)
             continue
 
         if wtype == "player":
-            # Spielerauswahl: eigene Farbe wählen
+            # BUGFIX 18.07. (apeheads Fish-Befund): Hier stand "eigene Farbe wählen" —
+            # der Runner beantwortete die Spielerauswahl SELBST und griff damit immer
+            # den Bot an. Bei Fish ("Select player to decrease plants production")
+            # senkte der Bot so seine EIGENE Pflanzenproduktion, obwohl apehead welche
+            # hatte. Ants funktionierte, weil es über SelectCard läuft und den normalen
+            # Pfad nimmt. tm_bot.handle_player unterscheidet längst korrekt zwischen
+            # Angriff (decrease/remove/steal/lose -> Gegner) und Bonus (-> selbst), wurde
+            # hier aber nie aufgerufen. Die A/B-Schleife (s.u.) machte es schon richtig;
+            # wie beim Draft-Absturz war NUR der --vs-human-Pfad übersehen worden.
             players = waiting.get("players", [])
             if players:
                 colors  = [p if isinstance(p, str) else p.get("color", "") for p in players]
-                chosen  = my_color if my_color in colors else colors[0]
-                payload = {"type": "player", "runId": state["runId"], "player": chosen}
+                payload = None
+                try:
+                    _res = decide(state)
+                    payload = _res[0] if isinstance(_res, tuple) else _res
+                except Exception as _pe:
+                    log.warning("  player-Handler Fehler: %s – Fallback", _pe)
+                if not payload:
+                    chosen  = my_color if my_color in colors else colors[0]
+                    payload = {"type": "player", "runId": state["runId"], "player": chosen}
+                log.info("  👤 Spielerauswahl -> %s", payload.get("player"))
                 try:
                     post_input(base_url, player_id, payload)
                     time.sleep(POST_WAIT)
@@ -1294,6 +1382,17 @@ def run_mcts_bot_mp(
         if key == last_key and wtype != "initialCards":
             time.sleep(POLL_INTERVAL)
             continue
+
+        # DRAFT-REPICK: diesen Kartenpool schon beantwortet? Dann NICHT erneut senden -
+        # die gewaehlte Karte ist serverseitig bereits verarbeitet und ein zweiter Versuch
+        # scheitert mit "Card <Name> not found" (HTTP 400). Warten, bis der Server ein
+        # neues Paeckchen anbietet (dann aendert sich der Pool-Key).
+        if _is_draft_repick(state):
+            _pk = _repick_pool_key(state)
+            if _pk in repick_done:
+                time.sleep(POLL_INTERVAL)
+                continue
+            repick_done.add(_pk)
 
         gen = game.get("generation", 1)
         mc  = player.get("megacredits", 0)
@@ -1443,11 +1542,25 @@ def run_mcts_bot_mp(
                 # die Folgeaktion und der Bot pollt endlos ohne Log. Daher direkt
                 # neu lesen.
                 last_key = None
+            # Erfolgreicher Post -> Sperrliste zuruecksetzen (sie gilt nur fuer den
+            # aktuellen Fehlerzyklus, nicht fuer die ganze Partie).
+            try:
+                import tm_bot as _tb
+                if _tb._draft_rejected:
+                    _tb._draft_rejected.clear()
+            except Exception:
+                pass
         except requests.HTTPError as e:
             # Fehlschläge je Input zählen (robust gegen oszillierende Zustände,
             # bei denen erfolgreiche Zwischenposts einen reinen "consecutive"-
             # Zähler immer wieder zurücksetzen würden).
-            err_key = (wtype, str(waiting.get("title", ""))[:80])
+            # Die Kartennamen gehoeren in den Schluessel: im Draft ist der TITEL ueber
+            # ALLE Runden identisch ("{'data': [{'type': 2, 'value': 'blue'}]}"), sodass
+            # sich Fehler aus verschiedenen Draft-Runden zu einem Abbruch aufsummierten
+            # (apehead 18.07.: Abbruch bei "4x", obwohl in dieser Runde nur 1-2 Versuche
+            # scheiterten). Mit den Karten im Schluessel zaehlt jede Runde fuer sich.
+            err_key = (wtype, str(waiting.get("title", ""))[:80],
+                       tuple(c.get("name", "") for c in (waiting.get("cards") or [])))
             post_error_counts[err_key] = post_error_counts.get(err_key, 0) + 1
             n_err = post_error_counts[err_key]
             log.warning("  HTTP Fehler (%d× für diesen Input): %s",
@@ -1463,6 +1576,27 @@ def run_mcts_bot_mp(
                           "Struktur melden, dann lässt sich der Handler ergänzen.",
                           n_err)
                 break
+            # DRAFT-CACHE VERWERFEN (apeheads Absturz 18.07., die eigentliche Ursache):
+            # _draft_choice_cache haelt die Wahl pro Kartenpool fest (Repick-Stabilitaet).
+            # Hat der Server sie gerade ABGELEHNT ("Card <Name> not found"), ist genau diese
+            # Wahl falsch - der Bot wuerde sie sonst bei jedem Retry erneut senden und nach
+            # 4 Versuchen abbrechen. Cache leeren => naechster Versuch entscheidet frisch
+            # gegen den aktuellen Pool.
+            try:
+                import re as _re
+                import tm_bot as _tb
+                _tb._draft_choice_cache.clear()
+                # Der Server nennt die abgelehnte Karte im Klartext:
+                # "Error: Card <Name> not found". Diese Karte gezielt sperren, damit der
+                # Bot beim naechsten Versuch die NAECHSTBESTE waehlt statt dieselbe erneut.
+                _txt = e.response.text if e.response is not None else ""
+                for _m in _re.finditer(r"Card (.+?) not found", _txt):
+                    _tb._draft_rejected.add(_m.group(1).strip())
+                if _tb._draft_rejected:
+                    log.warning("  ⚠️ Vom Server abgelehnte Draft-Karten: %s",
+                                sorted(_tb._draft_rejected))
+            except Exception:
+                pass
             # last_key=None: nächster Poll versucht State neu zu lesen
             last_key = None
             time.sleep(ERROR_WAIT)
@@ -1487,6 +1621,18 @@ def run_mcts_bot_mp(
 # Geisterzustände, keine Doppelzüge und keinen Rollback-Deadlock mehr.
 # Lock, ready-Dateien und Koordinierungsdateien sind hier überflüssig.
 # ---------------------------------------------------------------------------
+
+def _can_place_final_greenery(state: dict) -> bool:
+    """True, wenn der Bot am Spielende noch mind. eine Greenery aus Pflanzen legen kann.
+    ERSETZT die frueher hart kodierte Schwelle `my_plants < 8`: die echten Greenery-Kosten
+    variieren (Ecoline = 6 Pflanzen statt 8). Mit Ecoline und 6-7 Pflanzen dachte der alte
+    Code faelschlich `< 8 -> keine Greenery mehr anstehend` und stieg aus der Warteschleife
+    aus -> der Server haengt auf die nie kommende finale Greenery-Platzierung (17.07.)."""
+    try:
+        return can_convert_plants(state)
+    except Exception:
+        return state.get("thisPlayer", {}).get("plants", 0) >= 8
+
 
 def _needs_action(state: dict) -> bool:
     """True, wenn der Spieler im gegebenen State eine Eingabe machen muss."""
@@ -1626,7 +1772,19 @@ def _step_player(
         # Erkennung braeuchte einen State-Vergleich (re-GET), nicht die save_id.
         return True
     except requests.HTTPError as e:
-        log.warning("  HTTP Fehler: %s", e.response.text[:200] if e.response else e)
+        body = ""
+        try:
+            body = e.response.text[:300] if e.response is not None else ""
+        except Exception:
+            body = ""
+        sc = e.response.status_code if e.response is not None else "?"
+        log.warning("  HTTP %s Fehler. Server-Body: %r", sc, body)
+        # Der Server-Body ist bei diesem 400 oft LEER -> die eigentliche Diagnose ist,
+        # WAS der Bot gesendet hat und WORAUF. Beides einmalig ausgeben (15.07.).
+        log.warning("  ⚠️ Gesendete Payload: %r", payload)
+        log.warning("  ⚠️ waitingFor-Titel: %r | type=%r",
+                    (state.get("waitingFor") or {}).get("title"),
+                    (state.get("waitingFor") or {}).get("type"))
         time.sleep(ERROR_WAIT)
         return False
     except Exception as e:
@@ -1635,7 +1793,8 @@ def _step_player(
         return False
 
 
-def _finalize_selfplay(base_url, color_to_id, mcts_color, transitions, data_file):
+def _finalize_selfplay(base_url, color_to_id, mcts_color, transitions, data_file,
+                       prod_snap=None):
     """Endwertung: finale VPs, Label berechnen, Trainingsdaten speichern."""
     mcts_id   = color_to_id[mcts_color]
     all_final = {}
@@ -1685,16 +1844,75 @@ def _finalize_selfplay(base_url, color_to_id, mcts_color, transitions, data_file
 
     # Ergebnis nach FARBE (pid wechselt je Partie, Farbe ist stabil) für die
     # Aggregation über mehrere Partien in run_sequential_selfplay.
+    # VERHALTENS-DATEN je Farbe (fuer den Strategie-Layer): Endproduktion, Endkacheln
+    # und die Gen-3/5/8-Snapshots. Erlaubt, die Strategie-Ketten im A/B zu messen,
+    # ohne Menschpartien.
+    _behav = {}
+    for _c, _pid in color_to_id.items():
+        _tp = all_final.get(_pid, {}).get("thisPlayer", {})
+        _behav[_c] = {
+            "end_prod": {
+                "mc":    _tp.get("megacreditProduction", 0),
+                "steel": _tp.get("steelProduction", 0),
+                "titan": _tp.get("titaniumProduction", 0),
+                "plant": _tp.get("plantProduction", 0),
+                "energy":_tp.get("energyProduction", 0),
+                "heat":  _tp.get("heatProduction", 0),
+            },
+            "cities":    _tp.get("citiesCount", 0),
+            "vp_parts":  _tp.get("victoryPointsBreakdown", {}),
+            "snap":      (prod_snap or {}).get(_c, {}),
+        }
     return {
         "vps_by_color": {c: all_vps.get(pid, 0) for c, pid in color_to_id.items()},
         # M€ am Spielende: offizieller TM-Tiebreaker bei VP-Gleichstand
         "mc_by_color": {c: all_final.get(pid, {}).get("thisPlayer", {}).get("megacredits", 0)
                         for c, pid in color_to_id.items()},
+        "behav_by_color": _behav,
         "mcts_color":   mcts_color,
         "mcts_vp":      my_vp,
         "mcts_rank":    rank,
         "mcts_won":     won,
     }
+
+
+def _repick_pool_key(state):
+    """Kennung des aktuellen Repick-Kartensets (Farbe + sortierte Namen). Aendert sich, sobald
+    der Server ein neues Paeckchen anbietet -> dann darf der Spieler wieder antworten."""
+    w = state.get("waitingFor") or {}
+    color = (state.get("thisPlayer") or {}).get("color")
+    names = tuple(sorted(c.get("name", "") for c in (w.get("cards") or [])))
+    return (color, names)
+
+
+def _is_draft_repick(state):
+    """True in der DRAFT-REPICK-Phase: der Spieler hat bereits gedraftet (needsToDraft=False),
+    darf seine Karte aber aendern, bis alle anderen gewaehlt haben (Server-Aenderung ~07/2026,
+    message 'You can change your selection until all players have selected'). Der Bot antwortet
+    hier deterministisch immer dieselbe Karte -- das ist KEIN Haenger, sondern legitimes Warten
+    auf die Mitspieler. Der stuck-Zaehler darf in diesem Zustand NICHT hochlaufen, sonst wird
+    die Partie faelschlich abgebrochen."""
+    w = state.get("waitingFor") or {}
+    if w.get("type") != "card":
+        return False
+    tp = state.get("thisPlayer") or {}
+    if tp.get("needsToDraft"):        # echter Erst-Draft -> normaler Fortschritt
+        return False
+    title = w.get("title")
+    msg = title.get("message", "") if isinstance(title, dict) else str(title)
+    return "change your selection" in msg
+
+
+def _wf_signature(color, waiting):
+    """Fortschritts-Signatur eines waitingFor-Zustands. WICHTIG: der Titel allein reicht
+    NICHT -- im Draft-Repick ("You can change your selection...") ist der Titel ueber alle
+    Anfragen identisch, waehrend sich der KARTENINHALT aendert (das ist der Fortschritt).
+    Ein titel-basierter Haenger-Schutz haelt den Draft faelschlich fuer eine Endlosschleife
+    und bricht die Partie ab (15.07.). Darum Karten-Namen + min/max mit aufnehmen."""
+    w = waiting or {}
+    cards = tuple(sorted(c.get("name", "") for c in (w.get("cards") or [])))
+    return (color, w.get("type", ""), str(w.get("title", ""))[:60],
+            cards, w.get("min"), w.get("max"))
 
 
 def load_decide_variant(module_name: str, db_path: str | None = None):
@@ -1734,6 +1952,20 @@ def _summarize_crn(crn_games: list[dict], n_games: int):
         log.info("══════════════════════════════════════════════════")
         return
 
+    # ★ 20.07.: Rohdaten wegschreiben. Bisher wurden die Einzelpartien nur aggregiert
+    # und dann verworfen - die VP-Marge allein sagt nichts darueber, WIE die Partien
+    # zustande kamen. Konkreter Anlass: LEVER_RESOURCE_SYNERGY zielte auf die
+    # KOLLAPSPARTIEN (Bot mit 0 M-Produktion ueber acht Generationen), und ob es die im
+    # Bot-Duell ueberhaupt gibt, laesst sich ohne die Einzelwerte nicht pruefen.
+    try:
+        import json as _json, time as _time
+        _fn = f"ab_games_{int(_time.time())}.json"
+        with open(_fn, "w", encoding="utf-8") as _f:
+            _json.dump(crn_games, _f, indent=1, default=str)
+        log.info(f"   Rohdaten der Einzelpartien: {_fn}")
+    except Exception as _e:
+        log.warning(f"   Rohdaten konnten nicht geschrieben werden: {_e}")
+
     by_pair: dict[int, list] = defaultdict(list)
     for g in crn_games:
         by_pair[g["pair"]].append(g)
@@ -1759,6 +1991,25 @@ def _summarize_crn(crn_games: list[dict], n_games: int):
                 else:         ties += 1
         if len(ds) == 2:                       # nur vollständige Paare werten
             pair_margins.append(sum(ds) / 2.0)
+
+    # Verteilung der Einzelergebnisse - zeigt Ausreisser nach unten (Kollapspartien),
+    # die in der gepaarten Marge unsichtbar bleiben, weil sie sich dort herauskuerzen.
+    _alle_vps = []
+    for g in crn_games:
+        _alle_vps.append((g["vps"].get(g["chall"], 0), "C"))
+        _alle_vps.append((g["vps"].get(g["champ"], 0), "M"))
+    if _alle_vps:
+        _c = sorted(v for v, s in _alle_vps if s == "C")
+        _m = sorted(v for v, s in _alle_vps if s == "M")
+        def _q(xs, p):
+            return xs[min(len(xs) - 1, int(len(xs) * p))] if xs else 0
+        log.info("   VP-Verteilung (Ausreisser nach unten = Kollapspartien):")
+        log.info(f"      Challenger: min {min(_c)} | 10%% {_q(_c,.1)} | Median {_q(_c,.5)} | max {max(_c)}")
+        log.info(f"      Champion  : min {min(_m)} | 10%% {_q(_m,.1)} | Median {_q(_m,.5)} | max {max(_m)}")
+        _schwelle = 60
+        log.info(f"      Partien unter {_schwelle} VP: "
+                 f"Challenger {sum(1 for v in _c if v < _schwelle)} | "
+                 f"Champion {sum(1 for v in _m if v < _schwelle)}")
 
     n_pairs = len(pair_margins)
     log.info("📊 CRN-Auswertung: %d vollständige Paare | %d/%d Partien gewertet",
@@ -1818,9 +2069,20 @@ def _play_crn_game(base_url: str, game_id: str, color_to_id: dict,
     run_sequential_selfplay: Zeit-Cap, Stuck-Erkennung, Idle-Spielende."""
     all_player_ids = list(color_to_id.values())
     prev_sig, prev_save, stuck, idle = None, -1, 0, 0
+    repick_done = set()   # Repick-Pools, die in dieser Partie schon beantwortet wurden
     STUCK_ABORT   = 8
-    GAME_TIME_CAP = 600   # grosszuegiger als sequenziell: Server unter Parallel-Last
+    GAME_TIME_CAP = 1200  # 15.07.: neuer Server unter --parallel-Last deutlich langsamer;
+                          # echte Partien erreichten Gen 16 und liefen ins alte 600s-Cap
     game_start    = time.time()
+
+    # ── VERHALTENS-LOGGING (20.07., fuer den Strategie-Layer) ──
+    # Snapshot der Produktion je Spieler bei Gen 3/5/8. Der Loop pollt ohnehin jeden
+    # Spieler, also kostet es nur ein Dict. Zweck: die STRATEGIE-KETTEN messbar machen,
+    # die der VP-A/B nicht sieht - "baut der Bot die physische Terraform-Engine
+    # (Pflanzen/Energie/Waerme) auf, oder versackt er in Stahl/Titan, das nur Karten
+    # verbilligt?". Wird am Ende durch _finalize_selfplay in crn_games gereicht.
+    _prod_snap: dict = {}          # {color: {gen: {prod-typ: wert}}}
+    _SNAP_GENS = (3, 5, 8)
 
     while True:
         acted = False
@@ -1832,17 +2094,41 @@ def _play_crn_game(base_url: str, game_id: str, color_to_id: dict,
                 state = get_state(base_url, pid)
             except Exception:
                 continue
+            _g = state.get("game", {}).get("generation", 0) or 0
+            if _g in _SNAP_GENS and _g not in _prod_snap.get(color, {}):
+                _tp = state.get("thisPlayer", {})
+                _prod_snap.setdefault(color, {})[_g] = {
+                    "mc":    _tp.get("megacreditProduction", 0),
+                    "steel": _tp.get("steelProduction", 0),
+                    "titan": _tp.get("titaniumProduction", 0),
+                    "plant": _tp.get("plantProduction", 0),
+                    "energy":_tp.get("energyProduction", 0),
+                    "heat":  _tp.get("heatProduction", 0),
+                }
             if state.get("game", {}).get("phase", "") == "end":
                 return _finalize_selfplay(base_url, color_to_id,
-                                          next(iter(color_to_id)), [], None)
+                                          next(iter(color_to_id)), [], None,
+                                          prod_snap=_prod_snap)
             if _needs_action(state):
                 waiting = state.get("waitingFor") or {}
-                sig = (color, waiting.get("type", ""), str(waiting.get("title", ""))[:60])
+                sig = _wf_signature(color, waiting)
                 try:
                     cur_save = get_last_save_id(base_url, game_id)
                 except Exception:
                     cur_save = prev_save
-                stuck = stuck + 1 if (sig == prev_sig and cur_save == prev_save) else 0
+                if _is_draft_repick(state):
+                    stuck = 0                     # Repick: kein Haenger
+                    _pk = _repick_pool_key(state)
+                    if _pk in repick_done:
+                        # Diesen Pool schon gedraftet -> NICHT erneut antworten, sonst behaelt
+                        # der Server den Fokus auf diesem Spieler und der Mitspieler kommt nie
+                        # dran (Live-Lock unter --parallel, 15.07.). Ueberspringen = warten.
+                        continue
+                    repick_done.add(_pk)
+                elif sig == prev_sig and cur_save == prev_save:
+                    stuck += 1
+                else:
+                    stuck = 0
                 prev_sig, prev_save = sig, cur_save
                 if stuck >= STUCK_ABORT:
                     log.error("   ❌ Entscheidung %d× ohne Fortschritt (%s) – Partie %d abgebrochen",
@@ -1873,7 +2159,8 @@ def _play_crn_game(base_url: str, game_id: str, color_to_id: dict,
                                 and g.get("oceans", 0) >= 9):
                             log.info("   Niemand aktiv + Parameter maximal → Spielende")
                             return _finalize_selfplay(base_url, color_to_id,
-                                                      next(iter(color_to_id)), [], None)
+                                                      next(iter(color_to_id)), [], None,
+                                                      prod_snap=_prod_snap)
                 except Exception:
                     pass
             if idle * POLL_INTERVAL > 120:
@@ -1925,7 +2212,8 @@ def _run_crn_pair(pair_no: int, n_pairs: int, base_url: str, n_players: int,
             out_crn.append({"pair": pair_no, "seed": pair_seed,
                             "champ": champ, "chall": chall,
                             "vps": res["vps_by_color"],
-                            "mcs": res.get("mc_by_color", {})})
+                            "mcs": res.get("mc_by_color", {}),
+                            "behav": res.get("behav_by_color", {})})
         if flush:
             flush()   # Partie-Block sofort ausgeben statt erst am Paar-Ende
     return out_results, out_crn
@@ -2101,6 +2389,7 @@ def run_sequential_selfplay(
         prev_sig   = None    # (Farbe, waitingFor-Typ, Titel) der letzten Aktion
         prev_save  = -1      # globale save_id bei der letzten Aktion
         stuck      = 0       # wie oft dieselbe Entscheidung ohne Fortschritt kam
+        repick_done = set()  # Repick-Pools, die dieser Spieler schon beantwortet hat
         STUCK_FORCE_HEURISTIC = 3   # ab hier MCTS fuer diese Entscheidung abschalten
         STUCK_ABORT           = 8   # ab hier Partie abbrechen statt zu haengen
         # Catch-all: bricht eine Partie ab, die unrealistisch lange dauert. Faengt
@@ -2137,13 +2426,22 @@ def run_sequential_selfplay(
                     waiting = state.get("waitingFor") or {}
 
                     # Fortschritt seit der letzten Aktion? Signatur + globale save_id.
-                    sig = (color, waiting.get("type", ""),
-                           str(waiting.get("title", ""))[:60])
+                    sig = _wf_signature(color, waiting)
                     try:
                         cur_save = get_last_save_id(base_url, game_id)
                     except Exception:
                         cur_save = prev_save
-                    if sig == prev_sig and cur_save == prev_save:
+                    if _is_draft_repick(state):
+                        stuck = 0                 # Repick: kein Haenger
+                        _pk = _repick_pool_key(state)
+                        if _pk in repick_done:
+                            # Diesen Pool bereits gedraftet -> NICHT erneut antworten, sonst
+                            # behaelt der Server den Fokus auf diesem Spieler und der andere
+                            # kommt nie dran (Live-Lock, 15.07.). Ueberspringen = auf Mitspieler
+                            # warten. Ein NEUES Paeckchen (anderer _pk) wird wieder beantwortet.
+                            continue
+                        repick_done.add(_pk)
+                    elif sig == prev_sig and cur_save == prev_save:
                         stuck += 1
                     else:
                         stuck = 0
@@ -2256,6 +2554,7 @@ def run_sequential_selfplay(
                     "chall": all_colors[1] if game_num % 2 == 0 else all_colors[0],
                     "vps":   res["vps_by_color"],
                     "mcs":   res.get("mc_by_color", {}),
+                    "behav": res.get("behav_by_color", {}),
                 })
 
         # Aufräumen (Lock-Datei, falls MCTS einen geschrieben hat)
