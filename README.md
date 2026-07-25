@@ -41,6 +41,13 @@ NOTE: This site is restarted daily. A multiplayer game will remain available for
 Unfinished solo games are flushed after one day. We continue to make stability and scalability improvements in step with growth and popularity,
 but to make sure your game remains, we highly recommended to host your own web server.
 
+## ⬤ I want to play against a bot!
+You can! Just check out this repository and make sure that you have the ability to run python scripts. 
+
+
+
+Then, start the server as per usual (npm install -> npm run build -> npm run start), create a new 2 player game and select "Opponent is a bot" in the options. Start the game and enjoy!
+
 ## ⬤ I want to learn how to play
 There are far too many good tutorials online. [Here are the rulebooks, though.](https://github.com/terraforming-mars/terraforming-mars/wiki/Rulebooks)
 

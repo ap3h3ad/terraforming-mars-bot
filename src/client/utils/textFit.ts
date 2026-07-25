@@ -9,7 +9,7 @@
 import {getCachedFontSize, setCachedFontSize} from '@/client/utils/fontSizeCache';
 
 // Don't shrink past the smallest legible size.
-const MIN_FONT_SIZE = 10;
+const MIN_FONT_SIZE = 14;
 
 // Tracks the cost of fitting text so a caller can report how long it took to
 // resize a batch of elements.
