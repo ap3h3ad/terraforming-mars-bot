@@ -42,11 +42,91 @@ Unfinished solo games are flushed after one day. We continue to make stability a
 but to make sure your game remains, we highly recommended to host your own web server.
 
 ## ⬤ I want to play against a bot!
-You can! Just check out this repository and make sure that you have the ability to run python scripts. 
+You can! This fork adds a heuristic bot opponent written in Python. Everything the bot needs is
+already in this repository under `bot/` (`tm_mcts_mp.py`, `tm_bot.py`, `tm_mcts.py`,
+`card_db.json`) — there is nothing else to download.
 
+The server starts the bot as a separate Python process whenever you create a game with
+"Opponent is a bot", so you need a working Python installation next to Node.
 
+### Requirements
 
-Then, start the server as per usual (npm install -> npm run build -> npm run start), create a new 2 player game and select "Opponent is a bot" in the options. Start the game and enjoy!
+| | |
+|---|---|
+| Node | 22.x (same as upstream) |
+| Python | **3.10 or newer** |
+| Python packages | `requests` |
+
+Python 3.10 is a hard minimum: the bot uses `X \| Y` type annotations that are evaluated on
+import, so 3.8 and 3.9 fail immediately. Note that some distributions still ship an older
+`python3` — check with `python3 --version` before you start.
+
+### Setup
+
+```bash
+npm install
+npm run build
+
+# install the bot's only dependency
+python3 -m pip install requests
+
+# enable the bot
+cp .env.sample .env
+echo "BOT_ENABLED=1" >> .env
+
+npm run start
+```
+
+Then open the server, create a **2 player** game, tick **"Opponent is a bot"** in the options and
+start the game. The checkbox only appears for 2 player games; the bot is not available for solo or
+for 3+ players.
+
+If something is missing, the server refuses to create the game and shows the reason (wrong Python
+command, `requests` not installed, bot script not found), so you will not end up in a silent game
+whose opponent never moves.
+
+### Configuration
+
+Only `BOT_ENABLED` has to be set. Everything else has a default and is only needed if your setup
+differs:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BOT_ENABLED` | *(unset — bot disabled)* | `1` enables the bot opponent |
+| `BOT_PYTHON` | `python3`, on Windows `py -3.12` | command used to start Python |
+| `BOT_DIR` | `<repo>/bot` | where the bot files live |
+| `BOT_SCRIPT` | `tm_mcts_mp.py` | entry point |
+| `BOT_ARGS` | `--no-mcts` | extra arguments for the bot |
+| `BOT_SERVER_URL` | `http://localhost:$PORT` | how the bot reaches this server |
+| `BOT_LOG_DIR` | same as `BOT_DIR` | where per-game bot logs are written |
+
+Two notes on `BOT_PYTHON`: if your `python3` is older than 3.10, point this at a newer interpreter
+(an absolute path or a virtualenv works, e.g. `BOT_PYTHON=/opt/python3.12/bin/python3`). And if you
+run the server through a process manager, remember that it does not inherit your shell's PATH.
+
+**TLS:** if you set `KEY_PATH` and `CERT_PATH`, the server speaks HTTPS only and the default
+`http://localhost:$PORT` will not work. Either terminate TLS in a reverse proxy and keep the
+application on plain HTTP (recommended), or set `BOT_SERVER_URL` to the HTTPS URL — the bot
+verifies certificates, so a self-signed one will be rejected.
+
+### How it works
+
+Creating a game with a bot opponent spawns one detached Python process that joins the game through
+its own player id and exits by itself when the game ends. One process per game, so several
+concurrent games mean several Python processes.
+
+Because the process is started fresh each time, you can replace the files in `bot/` without
+restarting the server or rebuilding.
+
+### If the bot does not move
+
+Look at `bot/bot_<gameId>.log` — every bot process writes its output there. The most common cause
+is a Python version below 3.10: the pre-flight check verifies that Python starts and that
+`requests` is importable, but not the version, so a too-old interpreter passes the check and only
+fails later on import.
+
+These log files are appended per game and are not rotated, which is worth knowing if you run a
+public server.
 
 ## ⬤ I want to learn how to play
 There are far too many good tutorials online. [Here are the rulebooks, though.](https://github.com/terraforming-mars/terraforming-mars/wiki/Rulebooks)
