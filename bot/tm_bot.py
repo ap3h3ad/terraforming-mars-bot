@@ -514,6 +514,31 @@ PURE_COLLECTORS = frozenset({
 LEVER_LATE_TR_NO_CITY     = False
 MC_SCARCITY_FLOOR         = 5.0
 MC_SCARCITY_BONUS         = 0.75
+# LEVER_MILESTONE_MARGINAL (27.07.): Meilenstein-Fortschritt wird mit seinem GRENZWERT
+# bepreist statt mit einem pauschalen Bonus. Hintergrund: Die beiden bisherigen Ansaetze
+# sitzen in einer Zange - LEVER_PLAN (grosser Pauschalbonus) war regressiv (Tunnelblick,
+# Siegrate 29->21), die Pursue-Logik (Deckel 4.0 M) ist zu klein, um Tempo zu erzeugen.
+# Beide behandeln den Schritt von Luecke 3 auf 2 wie den von 2 auf 1.
+# Gemessen (21 Live-Partien): P(Schwelle bis Gen 10 | Luecke bei Gen g) hat eine Klippe
+# zwischen Luecke 1 (75 %) und 2 (21 %); jenseits von 2 ist die Luecke fast egal.
+# Ein Meilenstein ist netto 17 M wert (25 minus 8 Kosten). Der Wert EINES Schrittes ist
+# damit 17 * (P(neu) - P(alt)): Luecke 3->2 rund 0 M, 2->1 rund 9 M, 1->0 rund 4 M.
+# Die Kurve begrenzt sich selbst - Fortschritt weit von der Schwelle ist automatisch
+# wertlos, deshalb kann kein Tunnelblick entstehen.
+# Nebeneffekt: die Kruecke _MILESTONE_PURSUE_ACTIONS (nur gardener/mayor) wird nicht
+# gebraucht, weil die Luecke NACH der Karte neu gerechnet wird - das deckt alle 29 ab.
+LEVER_MILESTONE_MARGINAL  = True
+# P(Schwelle bis Gen 10 erreichen | Luecke). Spalten: Gen <=4, 5-6, 7-8, >=9.
+# ⚠ VORLAEUFIG ueber alle Meilensteintypen GEPOOLT. Gemessen ist, dass dieselbe Luecke
+# je nach Dimension zwischen 14 % (Staedte) und 75 % (Tags) bedeutet - die Kurve gehoert
+# also pro Meilenstein. Die dafuer noetigen Daten liefert die MEILENSTEIN-DIAG-Ausgabe.
+_MS_REACH = {
+    0: (1.00, 1.00, 1.00, 1.00),
+    1: (0.75, 0.75, 0.70, 0.67),
+    2: (0.47, 0.21, 0.18, 0.14),
+    3: (0.30, 0.22, 0.15, 0.12),
+}
+_MS_REACH_FAR = 0.10      # Luecke >= 4
 # LEVER_PHYS_ENGINE (26.07.): Der Bot baut GELD, der Mensch baut WAERME und ENERGIE.
 # Gemessen ueber 18 Live-Partien, Produktionspunkte aus Karten bis Gen 6:
 # Waerme+Energie 1.7 gegen 4.4, Geld 3.4 gegen 0.8 -> Verhaeltnis (W+E)/Geld 0.50
@@ -1533,6 +1558,11 @@ def score_card(card: dict, state: dict) -> float:
     Verhindert dass ML alle Handkarten auf negativ drückt.
     """
     rules_score = _score_card_rules(card, state)
+    # Grenzwert des Meilenstein-Fortschritts (s. LEVER_MILESTONE_MARGINAL)
+    try:
+        rules_score += _milestone_marginal_value(state, card_info(card.get("name", "")))
+    except Exception:
+        pass
     score = rules_score
     if ML_MODEL is not None:
         try:
@@ -4496,6 +4526,65 @@ _MILESTONE_PURSUE_ACTIONS = {
     "gardener": {"greenery", "greenery_sp"},
     "mayor":    {"city_sp"},
 }
+
+
+def _ms_reach(gap: int, gen: int) -> float:
+    """Gemessene Wahrscheinlichkeit, die Schwelle noch rechtzeitig zu erreichen."""
+    if gap <= 0:
+        return 1.0
+    col = 0 if gen <= 4 else 1 if gen <= 6 else 2 if gen <= 8 else 3
+    row = _MS_REACH.get(gap)
+    return row[col] if row else _MS_REACH_FAR
+
+
+def _stats_after_card(stats: dict, info: dict) -> dict:
+    """Vorhergesagte Statistik NACH dem Ausspielen der Karte. Deckt die Groessen ab, an
+    denen Meilensteine haengen: Tags, Produktion, TR, Kacheln, Kartenzahl."""
+    st = dict(stats)
+    st["tags"] = dict(stats.get("tags") or {})
+    for t in (info.get("tags") or []):
+        k = t.lower()
+        st["tags"][k] = st["tags"].get(k, 0) + 1
+    st["prods"] = dict(stats.get("prods") or {})
+    for k, v in (info.get("production") or {}).items():
+        kk = "megacredits" if k in ("mc", "megacredits") else k
+        st["prods"][kk] = st["prods"].get(kk, 0) + v
+    st["tr"] = (stats.get("tr") or 0) + (info.get("tr") or 0)
+    for k, v in (info.get("global") or {}).items():
+        st["tr"] += v                      # jeder Globalschritt ist 1 TR
+    st["played"] = (stats.get("played") or 0) + 1
+    if info.get("city"):     st["cities"]     = (stats.get("cities") or 0) + 1
+    if info.get("greenery"): st["greeneries"] = (stats.get("greeneries") or 0) + 1
+    if info.get("requirements"): st["req_cards"] = (stats.get("req_cards") or 0) + 1
+    return st
+
+
+def _milestone_marginal_value(state: dict, info: dict) -> float:
+    """GRENZWERT des Meilenstein-Fortschritts dieser Karte: 17 M mal die Zunahme der
+    Erreichbarkeit, summiert ueber die noch offenen Meilensteine. Nur wo ein Platz frei
+    ist und der Bot nicht schon hinter dem Gegner liegt."""
+    if not LEVER_MILESTONE_MARGINAL or not info:
+        return 0.0
+    avail, claimed, mine, free = _milestone_state(state)
+    if free < 1 or not avail:
+        return 0.0
+    stats = _player_stats(state)
+    after = _stats_after_card(stats, info)
+    opps  = _opponent_stats(state)
+    gen   = (state.get("game", {}) or {}).get("generation", 0) or 0
+    total = 0.0
+    for nm in avail:
+        g0 = _milestone_gap(nm, stats)
+        if g0 <= 0:
+            continue                       # schon qualifiziert - Claim laeuft anderswo
+        g1 = _milestone_gap(nm, after)
+        if g1 >= g0:
+            continue
+        opp_g = min([_milestone_gap(nm, o) for o in opps], default=99)
+        if g0 > opp_g + 1:                 # deutlich hinten - Rennen faktisch verloren
+            continue
+        total += (25 - _MILESTONE_COST) * (_ms_reach(g1, gen) - _ms_reach(g0, gen))
+    return max(0.0, total)
 
 
 def _milestone_action_bonus(action_type: str, state: dict) -> float:
