@@ -528,6 +528,16 @@ MC_SCARCITY_BONUS         = 0.75
 # Nebeneffekt: die Kruecke _MILESTONE_PURSUE_ACTIONS (nur gardener/mayor) wird nicht
 # gebraucht, weil die Luecke NACH der Karte neu gerechnet wird - das deckt alle 29 ab.
 LEVER_MILESTONE_MARGINAL  = True
+# LEVER_MILESTONE_SPACE (28.07.): derselbe Grenzwert, angewandt auf die FELDWAHL.
+# Drei Meilensteine haengen nicht an der Kartenwahl, sondern daran, WO gebaut wird -
+# und blieben deshalb in jeder protokollierten Partie bei Luecke 3 stehen, bei BEIDEN
+# Spielern (5 VP, die niemand aufhebt):
+#   Polar Explorer  "Own 3 tiles on the two bottom rows"  -> Feld mit y in 7/8
+#   Networker       neben ein Feld mit Adjazenzbonus bauen (AresHandler Z.139)
+#   Purifier        AUF ein Hazard-Feld bauen (AresHandler Z.142)
+# Die Zaehler kennt der Bot bereits: bottom_tiles aus dem Brett, networker/purifier
+# aus game.aresData.milestoneResults.
+LEVER_MILESTONE_SPACE     = True
 # P(Schwelle bis Gen 10 erreichen | Luecke). Spalten: Gen <=4, 5-6, 7-8, >=9.
 # ⚠ VORLAEUFIG ueber alle Meilensteintypen GEPOOLT. Gemessen ist, dass dieselbe Luecke
 # je nach Dimension zwischen 14 % (Staedte) und 75 % (Tags) bedeutet - die Kurve gehoert
@@ -536,8 +546,9 @@ _MS_REACH = {
     0: (1.00, 1.00, 1.00, 1.00),
     1: (0.75, 0.75, 0.70, 0.67),
     2: (0.47, 0.21, 0.18, 0.14),
-    3: (0.30, 0.22, 0.15, 0.12),
-}
+    3: (0.30, 0.21, 0.15, 0.12),   # Sp.2 von 0.22 auf 0.21 geklemmt: die Rohkurve war
+}                                  # dort nicht monoton (Rauschen), was negative
+                                   # Grenzwerte erzeugt haette
 _MS_REACH_FAR = 0.10      # Luecke >= 4
 # LEVER_PHYS_ENGINE (26.07.): Der Bot baut GELD, der Mensch baut WAERME und ENERGIE.
 # Gemessen ueber 18 Live-Partien, Produktionspunkte aus Karten bis Gen 6:
@@ -861,6 +872,12 @@ _draft_choice_cache: dict = {}
 # ab. Der Server nennt den Namen im Fehlertext - also genau diese Karte ueberspringen und
 # die naechstbeste nehmen. Wird nach jedem ERFOLGREICHEN Post geleert.
 _draft_rejected: set = set()
+# 28.07.: Dasselbe fuers AUSSPIELEN. Der Server kann eine Kartenzahlung ablehnen
+# ("Did not spend enough to pay for card"); der Bot schickte dieselbe Zahlung dann
+# 8x erneut und verlor die Partie. Der Runner traegt die abgelehnte Karte hier ein,
+# der naechste Versuch waehlt die naechstbeste. Wird nach jedem erfolgreichen POST
+# geleert - die Sperre gilt nur fuer den laufenden Fehlerzyklus.
+_play_rejected: set = set()
 
 def _draft_cache_key(state, cards):
     pid = state.get("id") or (state.get("thisPlayer") or {}).get("color")
@@ -3082,11 +3099,41 @@ def get_top_spaces(
     return result[:n]
 
 
+def _space_milestone_bonus(space: dict, neigh: list, stats: dict,
+                           opps: list, state: dict) -> float:
+    """Grenzwert der Meilenstein-Fortschritte, die von DIESEM Feld abhaengen."""
+    if not LEVER_MILESTONE_SPACE or not state:
+        return 0.0
+    avail, claimed, mine, free = _milestone_state(state)
+    if free < 1 or not avail:
+        return 0.0
+    gen = (state.get("game", {}) or {}).get("generation", 0) or 0
+    low = {m.lower(): m for m in avail}
+    total = 0.0
+    for key, gains in (
+        ("polar explorer", space.get("y") in (7, 8)),
+        ("networker",      any(_ARES_ADJ_BONUS.get(t) for t, _o in neigh)),
+        ("purifier",       space.get("tileType") in _HAZARD_TILE_TYPES),
+    ):
+        nm = low.get(key)
+        if not nm or not gains:
+            continue
+        g0 = _milestone_gap(nm, stats)
+        if g0 <= 0:
+            continue
+        opp_g = min([_milestone_gap(nm, o) for o in opps], default=99)
+        if g0 > opp_g + 1:
+            continue
+        total += (25 - _MILESTONE_COST) * (_ms_reach(g0 - 1, gen) - _ms_reach(g0, gen))
+    return total
+
+
 def choose_best_space(
     valid_ids:  list[str],
     space_map:  dict,
     tile_type:  str = "greenery",   # "greenery", "city", "ocean"
     player_id:  str | None = None,
+    state:      dict | None = None,   # fuer LEVER_MILESTONE_SPACE
 ) -> str:
     """
     Wählt das beste Feld für ein Tile.
@@ -3124,12 +3171,22 @@ def choose_best_space(
 
         score += _tile_adjacency_score(tile_type, own_cities, opp_cities,
                                         own_greens, opp_greens, oceans, free_adj)
-
+        if _ms_ctx is not None:
+            score += _space_milestone_bonus(
+                space, _neighbor_tiles(sid, space_map, adjacency),
+                _ms_ctx[0], _ms_ctx[1], state)
         return score
 
     adjacency = board_adjacency(space_map)
     if not valid_ids:
         return None
+    # Spieler- und Gegnerstatistik einmal je Aufruf, nicht je Feld
+    _ms_ctx = None
+    if LEVER_MILESTONE_SPACE and state:
+        try:
+            _ms_ctx = (_player_stats(state), _opponent_stats(state))
+        except Exception:
+            _ms_ctx = None
     return max(valid_ids, key=score_space)
 
 
@@ -5475,6 +5532,13 @@ def handle_or(state: dict) -> dict:
             hand_cards = [c for c in all_cards
                          if not c["name"].endswith(":SP")
                          and c["name"] not in SP_NAMES]
+            if _play_rejected:
+                _before = len(hand_cards)
+                hand_cards = [c for c in hand_cards
+                              if c.get("name") not in _play_rejected]
+                if len(hand_cards) < _before:
+                    log.info("  ⏭ Vom Server abgelehnte Karte(n) uebersprungen: %s",
+                             sorted(_play_rejected))
             played_positive = False
             for sc, card in get_playable_cards(hand_cards, state, max_cards=3):
                 played_positive = True
@@ -5848,6 +5912,31 @@ def handle_or(state: dict) -> dict:
                 }))
 
     if not candidates:
+        # 28.07.: Der Rueckfall schickte frueher IMMER {"type": "option"} - unabhaengig
+        # davon, was Option 0 verlangt. Bei der Solar-Phase ("Select action for World
+        # Government Terraforming") ist die erste Option eine FELDWAHL; der Server
+        # antwortete mit 'Not a valid SelectSpaceResponse', der Bot wiederholte, und nach
+        # 8 Versuchen brach die Partie ab (25 % Abbrueche im Lauf vom 28.07.).
+        # Jetzt wird die Option ihrem eigenen Typ entsprechend beantwortet - dafuer wird
+        # der zustaendige Handler mit der Option als waitingFor befragt.
+        opts = waiting.get("options") or []
+        if opts:
+            _sub = dict(state)
+            _sub["waitingFor"] = opts[0]
+            _h = HANDLERS.get((opts[0] or {}).get("type"))
+            _resp = None
+            if _h is not None:
+                try:
+                    _resp = _h(_sub)
+                except Exception as _e:                       # defensiv: nie den Zug verlieren
+                    log.debug("  handle_or-Rueckfall: %s", _e)
+            if _resp:
+                _inner = {k: v for k, v in _resp.items()
+                          if k != "runId" and not k.startswith("_")}
+                log.warning("  handle_or: keine Kandidaten, Option 0 als '%s' beantwortet",
+                            _inner.get("type"))
+                return {"type": "or", "runId": state["runId"], "index": 0,
+                        "response": _inner}
         log.warning("  handle_or: keine Kandidaten, sende Index 0")
         return {"type": "or", "runId": state["runId"], "index": 0,
                 "response": {"type": "option"}}
@@ -5951,6 +6040,7 @@ def handle_space(state: dict) -> dict:
         valid_ids, space_map,
         tile_type=tile_type,
         player_id=_player.get("color"),
+        state=state,
     )
     log.info("  🗺  Feld %s (%s)", best, tile_type)
     return {"type": "space", "runId": state["runId"], "spaceId": best}
@@ -6073,7 +6163,8 @@ def handle_and(state: dict) -> dict | None:
                 if space_ids:
                     space_map = {s["id"]: s for s in state["game"]["spaces"]}
                     best = choose_best_space(space_ids, space_map,
-                                            player_id=state["thisPlayer"].get("color"))
+                                            player_id=state["thisPlayer"].get("color"),
+                                            state=state)
                     responses.append({"type": "space", "spaceId": best})
                 else:
                     responses.append({"type": "space", "spaceId": "03"})
