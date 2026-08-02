@@ -942,7 +942,7 @@
   },
   "play_value_M": 0.0,
   "module": "base",
-  "action_once": 0.0,
+  "action_once": 6.0,
   "action_prod": 0.0,
   "action_input": {},
   "action_places": [
@@ -6374,7 +6374,7 @@
   },
   "play_value_M": 0.0,
   "module": "corpera",
-  "action_once": 0.0,
+  "action_once": 2.0,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -7570,7 +7570,7 @@
   },
   "play_value_M": 0.0,
   "module": "corpera",
-  "action_once": 0.0,
+  "action_once": 4.0,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -10968,7 +10968,7 @@
   },
   "play_value_M": 5.0,
   "module": "community",
-  "action_once": 0.0,
+  "action_once": 1.5,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -18451,7 +18451,7 @@
   },
   "play_value_M": 0.0,
   "module": "promo",
-  "action_once": 0.0,
+  "action_once": 2.0,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -18938,7 +18938,7 @@
   },
   "play_value_M": 0.0,
   "module": "promo",
-  "action_once": 0.0,
+  "action_once": 4.0,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -19498,7 +19498,7 @@
   },
   "play_value_M": 13.0,
   "module": "promo",
-  "action_once": 0.0,
+  "action_once": 2.5,
   "action_prod": 0.0,
   "action_input": {}
  },
@@ -19632,7 +19632,7 @@
    "hold_penalty": -3.0,
    "net": -17.0
   },
-  "action_once": 0.0,
+  "action_once": 3.0,
   "play_value_M": -10.0,
   "module": "promo",
   "action_prod": 0.0,

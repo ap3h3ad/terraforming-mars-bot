@@ -4356,8 +4356,15 @@ def _player_stats(state: dict) -> dict:
         n = c.get("resources", 0) or 0
         if n <= 0:
             continue
+        # 01.08.: Beide frueheren Quellen waren LEER - dieselbe Fehlerklasse wie beim
+        # Virus-Fehler. Das Server-CardModel hat gar kein Feld "resourceType" (nur
+        # "resources" als Zahl), und card_db nennt das Feld "res_type", nicht
+        # "resourceType" (0 von 981 Eintraegen hatten den langen Namen). `rt` war damit
+        # IMMER leer -> res_types blieb 0 und bio_res 0, wodurch die Meilensteine
+        # Trader/Tradesman (3 verschiedene Kartenressourcen) und Farmer (5 Tiere+Mikroben)
+        # als unerreichbar galten, egal wie voll das Tableau war.
         rt = str((c.get("resourceType") or
-                  (card_info(c.get("name")) or {}).get("resourceType") or "")).upper()
+                  (card_info(c.get("name")) or {}).get("res_type") or "")).upper()
         if rt:
             _res_types.add(rt)
         if rt in ("MICROBE", "ANIMAL"):
@@ -4796,7 +4803,12 @@ _ENABLER_CARDS = {"Insulation", "Virus", "Protected Habitats"}
 def _enabler_ok(name: str, state: dict) -> bool:
     """Hat die Combo-Karte ihren (nicht in card_db kodierten) Enabler? False -> abwerten."""
     p    = state.get("thisPlayer", {})
-    prod = p.get("production", {}) or {}
+    # 01.08.: frueher p.get("production") - dasselbe tote Feld wie beim Virus-Fehler.
+    # Das PublicPlayerModel liefert die Produktion FLACH (heatProduction, ...), ein Feld
+    # "production" gibt es dort nicht. Die Abfrage war also immer leer, Insulation bekam
+    # IMMER die ENABLER_PENALTY von 20 M - auch mit 8 Waermeproduktion, wo die Karte gut
+    # ist. player_production() beherrscht beide Schemata.
+    prod = player_production(p)
     if name == "Insulation":
         return prod.get("heat", 0) > 0          # Waerme-Prod -> MC-Prod: ohne Waermeprod wertlos
     if name == "Virus":
