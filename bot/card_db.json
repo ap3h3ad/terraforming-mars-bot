@@ -3,8 +3,7 @@
   "name": "Bioengineering Enclosure",
   "cost": 7,
   "tags": [
-   "ANIMAL",
-   "SCIENCE"
+   "ANIMAL"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -51,8 +50,7 @@
   "cost": 12,
   "tags": [
    "BUILDING",
-   "MICROBE",
-   "SCIENCE"
+   "MICROBE"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -1116,7 +1114,9 @@
    "SCIENCE"
   ],
   "type": "AUTOMATED",
-  "production": {},
+  "production": {
+   "energy": 2
+  },
   "stock": {},
   "global": {},
   "tr": 0,
@@ -2180,9 +2180,7 @@
   "name": "Decomposers",
   "cost": 5,
   "tags": [
-   "MICROBE",
-   "ANIMAL",
-   "PLANT"
+   "MICROBE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -4249,8 +4247,7 @@
   "name": "Insects",
   "cost": 9,
   "tags": [
-   "MICROBE",
-   "PLANT"
+   "MICROBE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -4333,8 +4330,7 @@
   "cost": 24,
   "tags": [
    "EARTH",
-   "SPACE",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "EVENT",
   "production": {},
@@ -4808,8 +4804,7 @@
   "name": "Lightning Harvest",
   "cost": 8,
   "tags": [
-   "POWER",
-   "SCIENCE"
+   "POWER"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -5257,8 +5252,7 @@
   "name": "Media Archives",
   "cost": 8,
   "tags": [
-   "EARTH",
-   "EVENT"
+   "EARTH"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -5291,8 +5285,7 @@
   "name": "Media Group",
   "cost": 6,
   "tags": [
-   "EARTH",
-   "EVENT"
+   "EARTH"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -5559,9 +5552,8 @@
   "name": "Miranda Resort",
   "cost": 12,
   "tags": [
-   "EARTH",
-   "SPACE",
-   "JOVIAN"
+   "JOVIAN",
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -5649,7 +5641,6 @@
   "name": "Nitrogen-Rich Asteroid",
   "cost": 31,
   "tags": [
-   "PLANT",
    "SPACE"
   ],
   "type": "EVENT",
@@ -5968,8 +5959,7 @@
   "name": "Optimal Aerobraking",
   "cost": 7,
   "tags": [
-   "SPACE",
-   "EVENT"
+   "SPACE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -6263,8 +6253,7 @@
   "name": "Plantation",
   "cost": 15,
   "tags": [
-   "PLANT",
-   "SCIENCE"
+   "PLANT"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -6967,7 +6956,6 @@
   "name": "Search For Life",
   "cost": 3,
   "tags": [
-   "MICROBE",
    "SCIENCE"
   ],
   "type": "ACTIVE",
@@ -7818,9 +7806,8 @@
   "name": "Tectonic Stress Power",
   "cost": 18,
   "tags": [
-   "POWER",
    "BUILDING",
-   "SCIENCE"
+   "POWER"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -8362,8 +8349,6 @@
   "cost": 9,
   "tags": [
    "MICROBE",
-   "ANIMAL",
-   "PLANT",
    "SCIENCE"
   ],
   "type": "ACTIVE",
@@ -8731,9 +8716,7 @@
  "Rogers": {
   "name": "Rogers",
   "cost": 0,
-  "tags": [
-   "VENUS"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {},
   "stock": {},
@@ -9002,8 +8985,7 @@
   "cost": 10,
   "tags": [
    "POWER",
-   "SPACE",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -9272,7 +9254,6 @@
   "name": "Galilean Waystation",
   "cost": 15,
   "tags": [
-   "JOVIAN",
    "SPACE"
   ],
   "type": "AUTOMATED",
@@ -9398,7 +9379,6 @@
   "name": "Impactor Swarm",
   "cost": 11,
   "tags": [
-   "JOVIAN",
    "SPACE"
   ],
   "type": "EVENT",
@@ -9540,8 +9520,7 @@
   "name": "Jupiter Floating Station",
   "cost": 9,
   "tags": [
-   "JOVIAN",
-   "SCIENCE"
+   "JOVIAN"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -9753,9 +9732,8 @@
   "name": "Martian Zoo",
   "cost": 12,
   "tags": [
-   "BUILDING",
    "ANIMAL",
-   "EARTH"
+   "BUILDING"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -10023,9 +10001,7 @@
  "Quantum Communications": {
   "name": "Quantum Communications",
   "cost": 8,
-  "tags": [
-   "SCIENCE"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {},
   "stock": {},
@@ -10903,9 +10879,7 @@
  "Political Uprising": {
   "name": "Political Uprising",
   "cost": 0,
-  "tags": [
-   "TURMOIL"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {},
   "stock": {},
@@ -10937,8 +10911,7 @@
   "name": "Project Workshop",
   "cost": 0,
   "tags": [
-   "EARTH",
-   "BLUE"
+   "EARTH"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -11154,8 +11127,7 @@
   "name": "Core Mine",
   "cost": 0,
   "tags": [
-   "MOON",
-   "MOON_MINING_RATE"
+   "MOON"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -11489,9 +11461,8 @@
   "name": "First Lunar Settlement",
   "cost": 0,
   "tags": [
-   "MOON",
-   "MOON_HABITAT_RATE",
-   "CITY"
+   "CITY",
+   "MOON"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -12031,9 +12002,8 @@
   "name": "Lunar Industry Complex",
   "cost": 28,
   "tags": [
-   "POWER",
    "BUILDING",
-   "MOON_MINING_RATE"
+   "POWER"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -12346,8 +12316,7 @@
   "cost": 19,
   "tags": [
    "BUILDING",
-   "MOON",
-   "MOON_MINING_RATE"
+   "MOON"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -12389,8 +12358,7 @@
   "cost": 14,
   "tags": [
    "BUILDING",
-   "MOON",
-   "MOON_MINING_RATE"
+   "MOON"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -13196,11 +13164,8 @@
   "name": "Thorium Rush",
   "cost": 39,
   "tags": [
-   "MOON",
    "BUILDING",
-   "MOON_MINING_RATE",
-   "MOON_LOGISTICS_RATE",
-   "MOON_HABITAT_RATE"
+   "MOON"
   ],
   "type": "EVENT",
   "production": {},
@@ -13350,8 +13315,7 @@
   "name": "Adhai High Orbit Constructions",
   "cost": 0,
   "tags": [
-   "SPACE",
-   "NO_PLANETARY_TAG"
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -13824,8 +13788,7 @@
   "tags": [
    "BUILDING",
    "MARS",
-   "SCIENCE",
-   "EVENT"
+   "SCIENCE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -14404,13 +14367,7 @@
  "Economic Help": {
   "name": "Economic Help",
   "cost": 9,
-  "tags": [
-   "MOON",
-   "MARS",
-   "JOVIAN",
-   "EARTH",
-   "VENUS"
-  ],
+  "tags": [],
   "type": "EVENT",
   "production": {
    "megacredits": 1
@@ -14487,8 +14444,7 @@
   "name": "Flat Mars Theory",
   "cost": 8,
   "tags": [
-   "EARTH",
-   "SCIENCE"
+   "EARTH"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -15218,8 +15174,7 @@
   "cost": 12,
   "tags": [
    "BUILDING",
-   "MARS",
-   "SCIENCE"
+   "MARS"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -15501,9 +15456,8 @@
   "name": "Oumuamua Type Object Survey",
   "cost": 20,
   "tags": [
-   "MICROBE",
-   "SPACE",
-   "SCIENCE"
+   "SCIENCE",
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -15781,17 +15735,7 @@
  "Public Sponsored Grant": {
   "name": "Public Sponsored Grant",
   "cost": 6,
-  "tags": [
-   "WILD",
-   "MOON",
-   "MARS",
-   "JOVIAN",
-   "EARTH",
-   "CITY",
-   "VENUS",
-   "CLONE",
-   "EVENT"
-  ],
+  "tags": [],
   "type": "EVENT",
   "production": {},
   "stock": {},
@@ -15952,9 +15896,7 @@
  "Rich Deposits": {
   "name": "Rich Deposits",
   "cost": 12,
-  "tags": [
-   "SCIENCE"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {
    "steel": 3
@@ -16001,9 +15943,8 @@
   "cost": 21,
   "tags": [
    "BUILDING",
-   "SPACE",
    "JOVIAN",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -16211,11 +16152,7 @@
   "name": "Solarpedia",
   "cost": 12,
   "tags": [
-   "MARS",
-   "JOVIAN",
-   "SPACE",
-   "EARTH",
-   "VENUS"
+   "SPACE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -16331,7 +16268,6 @@
   "name": "Space Debris Cleaning Operation",
   "cost": 7,
   "tags": [
-   "ANIMAL",
    "MARS",
    "SPACE"
   ],
@@ -16496,7 +16432,6 @@
   "name": "Terraforming Robots",
   "cost": 10,
   "tags": [
-   "MARS",
    "SCIENCE"
   ],
   "type": "ACTIVE",
@@ -16587,7 +16522,6 @@
   "name": "Valuable Gases:Pathfinders",
   "cost": 0,
   "tags": [
-   "FLOATER",
    "JOVIAN",
    "VENUS"
   ],
@@ -17237,8 +17171,7 @@
   "name": "Psychrophiles",
   "cost": 2,
   "tags": [
-   "MICROBE",
-   "PLANT"
+   "MICROBE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -17733,9 +17666,7 @@
  "Jovian Envoys": {
   "name": "Jovian Envoys",
   "cost": 2,
-  "tags": [
-   "JOVIAN"
-  ],
+  "tags": [],
   "type": "EVENT",
   "production": {},
   "stock": {},
@@ -18357,8 +18288,7 @@
   "name": "Astra Mechanica",
   "cost": 7,
   "tags": [
-   "SCIENCE",
-   "EVENT"
+   "SCIENCE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -18671,7 +18601,6 @@
   "name": "Cutting Edge Technology",
   "cost": 12,
   "tags": [
-   "REQ",
    "SCIENCE"
   ],
   "type": "ACTIVE",
@@ -18781,8 +18710,7 @@
   "name": "Dusk Laser Mining",
   "cost": 8,
   "tags": [
-   "SPACE",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -19341,7 +19269,6 @@
   "name": "Magnetic Shield",
   "cost": 24,
   "tags": [
-   "POWER",
    "SPACE"
   ],
   "type": "AUTOMATED",
@@ -19420,8 +19347,7 @@
   "name": "Mercurian Alloys",
   "cost": 3,
   "tags": [
-   "SPACE",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -19604,8 +19530,7 @@
   "cost": 14,
   "tags": [
    "EARTH",
-   "SPACE",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "ACTIVE",
   "production": {
@@ -19818,7 +19743,6 @@
   "name": "Protected Growth",
   "cost": 2,
   "tags": [
-   "POWER",
    "PLANT"
   ],
   "type": "EVENT",
@@ -19987,9 +19911,7 @@
  "Robot Pollinators": {
   "name": "Robot Pollinators",
   "cost": 9,
-  "tags": [
-   "PLANT"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {
    "plants": 1
@@ -20078,11 +20000,7 @@
  "Self-replicating Robots": {
   "name": "Self-replicating Robots",
   "cost": 7,
-  "tags": [
-   "BUILDING",
-   "SPACE",
-   "SCIENCE"
-  ],
+  "tags": [],
   "type": "ACTIVE",
   "production": {},
   "stock": {},
@@ -20247,8 +20165,7 @@
   "cost": 20,
   "tags": [
    "EARTH",
-   "SPACE",
-   "EVENT"
+   "SPACE"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -21191,8 +21108,6 @@
   "cost": 3,
   "tags": [
    "MICROBE",
-   "ANIMAL",
-   "PLANT",
    "SCIENCE"
   ],
   "type": "ACTIVE",
@@ -21939,9 +21854,8 @@
   "name": "Biobatteries",
   "cost": 7,
   "tags": [
-   "POWER",
    "MICROBE",
-   "WILD"
+   "POWER"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -22396,8 +22310,7 @@
   "name": "Detective TV Series",
   "cost": 5,
   "tags": [
-   "EARTH",
-   "CRIME"
+   "EARTH"
   ],
   "type": "ACTIVE",
   "production": {},
@@ -22652,7 +22565,6 @@
   "name": "Family Connections",
   "cost": 12,
   "tags": [
-   "CITY",
    "CRIME"
   ],
   "type": "EVENT",
@@ -22764,7 +22676,6 @@
   "name": "Gas Trust",
   "cost": 12,
   "tags": [
-   "WILD",
    "CRIME"
   ],
   "type": "AUTOMATED",
@@ -22910,8 +22821,7 @@
   "name": "Global Audit",
   "cost": 2,
   "tags": [
-   "EARTH",
-   "CRIME"
+   "EARTH"
   ],
   "type": "EVENT",
   "production": {},
@@ -23743,7 +23653,6 @@
   "name": "Narrative Spin",
   "cost": 5,
   "tags": [
-   "EARTH",
    "CRIME"
   ],
   "type": "EVENT",
@@ -24380,7 +24289,6 @@
   "name": "Racketeering",
   "cost": 5,
   "tags": [
-   "WILD",
    "CRIME"
   ],
   "type": "AUTOMATED",
@@ -25156,9 +25064,7 @@
  "Tunneling Loophole": {
   "name": "Tunneling Loophole",
   "cost": 8,
-  "tags": [
-   "EARTH"
-  ],
+  "tags": [],
   "type": "EVENT",
   "production": {},
   "stock": {},
@@ -25360,9 +25266,8 @@
   "name": "Underground Research Center",
   "cost": 12,
   "tags": [
-   "WILD",
-   "CLONE",
-   "BUILDING"
+   "BUILDING",
+   "WILD"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -25736,9 +25641,8 @@
   "name": "Atmoscoop",
   "cost": 22,
   "tags": [
-   "SPACE",
    "JOVIAN",
-   "SCIENCE"
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -25789,8 +25693,7 @@
   "name": "Comet for Venus",
   "cost": 11,
   "tags": [
-   "SPACE",
-   "VENUS"
+   "SPACE"
   ],
   "type": "EVENT",
   "production": {},
@@ -25868,9 +25771,8 @@
   "name": "Dawn City",
   "cost": 15,
   "tags": [
-   "SCIENCE",
-   "SPACE",
-   "CITY"
+   "CITY",
+   "SPACE"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -26054,8 +25956,6 @@
   "cost": 20,
   "tags": [
    "BUILDING",
-   "EARTH",
-   "VENUS",
    "CITY"
   ],
   "type": "AUTOMATED",
@@ -26099,9 +25999,7 @@
   "name": "Hydrogen to Venus",
   "cost": 11,
   "tags": [
-   "JOVIAN",
-   "SPACE",
-   "VENUS"
+   "SPACE"
   ],
   "type": "EVENT",
   "production": {},
@@ -26137,7 +26035,6 @@
   "name": "Io Sulphur Research",
   "cost": 17,
   "tags": [
-   "VENUS",
    "JOVIAN",
    "SCIENCE"
   ],
@@ -26265,11 +26162,7 @@
  "Luxury Foods": {
   "name": "Luxury Foods",
   "cost": 8,
-  "tags": [
-   "EARTH",
-   "JOVIAN",
-   "VENUS"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {},
   "stock": {},
@@ -26325,10 +26218,7 @@
   "name": "Mining Quota",
   "cost": 5,
   "tags": [
-   "BUILDING",
-   "EARTH",
-   "JOVIAN",
-   "VENUS"
+   "BUILDING"
   ],
   "type": "AUTOMATED",
   "production": {
@@ -26436,10 +26326,7 @@
   "name": "Omnicourt",
   "cost": 11,
   "tags": [
-   "BUILDING",
-   "EARTH",
-   "JOVIAN",
-   "VENUS"
+   "BUILDING"
   ],
   "type": "AUTOMATED",
   "production": {},
@@ -26589,11 +26476,7 @@
  "Solarnet": {
   "name": "Solarnet",
   "cost": 7,
-  "tags": [
-   "EARTH",
-   "JOVIAN",
-   "VENUS"
-  ],
+  "tags": [],
   "type": "AUTOMATED",
   "production": {},
   "stock": {},
